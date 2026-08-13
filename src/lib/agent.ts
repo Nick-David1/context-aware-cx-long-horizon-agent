@@ -232,14 +232,47 @@ Everything you need about company policy, this customer's history, and lessons f
 }
 
 /** The half that changes every turn, and therefore sits after the cache breakpoint. */
-function turnContext(kase: CaseRecord, context: string, plan: string): string {
+function turnContext(
+  kase: CaseRecord,
+  context: string,
+  plan: string,
+  account: string,
+): string {
   return `# Case
 ${kase.caseId}: goal is "${kase.goal}", currently ${kase.status}, attempt ${kase.attempts + 1}.
 
 ${plan}
 
+# Account on file
+${account}
+
 # Context for this turn
 ${context}`;
+}
+
+/**
+ * A compact account snapshot, injected every turn.
+ *
+ * Without it the model has to call get_account_state purely to learn the loan
+ * id before it can act — a full model round trip, about two seconds of silence,
+ * on the single most important turn of the call. Reading it here costs one
+ * Mongo query in parallel with retrieval.
+ */
+function renderAccount(
+  customer: { name: string; identityVerified: boolean } | null,
+  loans: { loanId: string; product: string; balance: number; monthlyPayment: number;
+    paymentDayOfMonth: number; status: string; pastDueAmount: number; latePayments12mo: number }[],
+): string {
+  if (!customer) return "(customer not found)";
+  const lines = loans.map(
+    (l) =>
+      `- ${l.loanId} ${l.product}: balance $${l.balance.toFixed(2)}, payment $${l.monthlyPayment.toFixed(2)} on day ${l.paymentDayOfMonth}, ${l.status}` +
+      `${l.pastDueAmount > 0 ? `, PAST DUE $${l.pastDueAmount.toFixed(2)}` : ""}, ${l.latePayments12mo} late in 12mo`,
+  );
+  return `${customer.name} — identity ${customer.identityVerified ? "VERIFIED" : "NOT verified"}
+${lines.join("\n")}
+
+Use these loan ids directly; you do not need get_account_state unless you need a field not listed here.`;
 }
 
 function planText(kase: CaseRecord): string {
@@ -267,6 +300,7 @@ export async function runAgentTurn(args: {
   if (!kase) throw new Error(`Case ${args.caseId} not found`);
 
   const tRecall = Date.now();
+  const accountPromise = loadCustomerAndLoan(kase.customerId);
   const memoriesUsed = await recall({
     // Search on what the customer actually said. Prefixing the case goal biases
     // every query toward the goal and buries an off-goal question.
@@ -321,7 +355,15 @@ export async function runAgentTurn(args: {
   // follows it, so a changing context block never invalidates the cached prefix.
   const system: Anthropic.TextBlockParam[] = [
     { type: "text", text: staticInstructions(), cache_control: { type: "ephemeral" } },
-    { type: "text", text: turnContext(kase, renderContext(memoriesUsed), planText(kase)) },
+    {
+      type: "text",
+      text: turnContext(
+        kase,
+        renderContext(memoriesUsed),
+        planText(kase),
+        await accountPromise.then(({ customer, loans }) => renderAccount(customer, loans)),
+      ),
+    },
   ];
   const actionLog: AgentTurnResult["actions"] = resumed ? [...resumed.completedTools] : [];
   // Mutated by the tool handler when a guardrail fires.
@@ -547,11 +589,25 @@ async function runTool(
       // signal the whole learning loop depends on. Instead the tool result
       // says so at the moment the goal is met.
       if (result.executed && GOAL_ACTION[kase.goal] === action.action) {
+        // Close it here rather than asking the model to call close_case. That
+        // saved an entire model round trip off the slowest turn in the call,
+        // and it makes the outcome signal unconditional — the learning loop no
+        // longer depends on the model remembering to fire a tool.
+        await closeCase(
+          kase.caseId,
+          "won",
+          result.summary,
+          memoriesUsed.map((m) => m.memoryId),
+        );
+        void reflectOnCase(kase.caseId).catch((err) =>
+          console.error("reflection failed", err),
+        );
         return {
           ...result,
           goalAchieved: true,
+          caseClosed: "won",
           instruction:
-            "This completes the case goal. Say the result out loud FIRST — what changed and to what — and put that sentence in the same message as your close_case call, before the tool call, not after it. The customer is on a phone and hears your text as you write it, so text that comes after a tool call is dead air they wait through. Then call close_case with result=won. Do not re-check eligibility for the action you just completed.",
+            "This completes the case goal and the case is now closed — do not call close_case. Reply with the concrete result out loud, what changed and to what, then stop. Do not re-check eligibility for the action you just completed.",
         };
       }
       return result;

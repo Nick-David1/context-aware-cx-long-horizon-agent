@@ -116,14 +116,24 @@ export async function POST(req: Request) {
         // the socket carries real data while the tool loop runs, and empty
         // content deltas below extend that without adding to the transcript.
         chunk({ role: "assistant", content: "" }, null);
-        const heartbeat = setInterval(() => chunk({ content: "" }, null), 2000);
 
-        // Text is forwarded as the model generates it, so speech starts on the
-        // first token rather than after the whole tool loop finishes.
+        // Keep chunks flowing for the WHOLE turn, not just until the first
+        // token. A turn speaks, runs tools for several seconds, then speaks
+        // again — and that middle gap is silence on the wire. Killing the
+        // keepalive at first token left exactly that gap unguarded, which is
+        // what "Generating the LLM response took too long" was measuring.
+        let lastChunkAt = Date.now();
+        const keepalive = setInterval(() => {
+          if (Date.now() - lastChunkAt >= 1500) {
+            chunk({ content: "" }, null);
+            lastChunkAt = Date.now();
+          }
+        }, 750);
+
         let streamed = 0;
         const onText = (delta: string) => {
-          if (!streamed) clearInterval(heartbeat);
           streamed += delta.length;
+          lastChunkAt = Date.now();
           chunk({ content: delta }, null);
         };
 
@@ -135,7 +145,7 @@ export async function POST(req: Request) {
             history,
             onText,
           });
-          clearInterval(heartbeat);
+          clearInterval(keepalive);
           // Only send the assembled reply if nothing streamed — otherwise this
           // would say everything twice.
           const reply = result.reply?.trim() ?? "";
@@ -175,7 +185,7 @@ export async function POST(req: Request) {
             `[llm] case=${caseId} replied ${reply.length} chars (${streamed} streamed)`,
           );
         } catch (err) {
-          clearInterval(heartbeat);
+          clearInterval(keepalive);
           console.error("agent turn failed:", err);
           // Say something rather than nothing — a silent stream is what makes
           // ElevenLabs fail the whole conversation.
