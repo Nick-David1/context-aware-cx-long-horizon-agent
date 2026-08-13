@@ -56,14 +56,16 @@ export default function Dashboard() {
   const [memories, setMemories] = useState<RecalledMemory[]>([]);
   const [actions, setActions] = useState<TurnAction[]>([]);
   const [pipeline, setPipeline] = useState<Pipeline | null>(null);
+  const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
 
   const loadCases = useCallback(async () => {
     try {
       const res = await fetch("/api/cases");
-      const json = (await res.json()) as { cases: CaseRow[] };
+      const json = (await res.json()) as { cases: CaseRow[]; voiceEnabled?: boolean };
       setCases(json.cases ?? []);
+      setVoiceEnabled(Boolean(json.voiceEnabled));
       setSelected((s) => s ?? json.cases?.[0]?.caseId ?? null);
     } catch {
       setError("Could not load cases — is MONGODB_URI set and seeded?");
@@ -202,11 +204,16 @@ export default function Dashboard() {
           </div>
           <button
             onClick={callNow}
-            disabled={!selected || busy}
-            className="rounded px-3 py-1.5 text-xs font-medium disabled:opacity-40"
+            disabled={!selected || busy || !voiceEnabled}
+            title={
+              voiceEnabled
+                ? "Place an outbound call for this case"
+                : "Connect a phone number in ElevenLabs to enable outbound calls. Voice still works through the ElevenLabs test widget."
+            }
+            className="rounded px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-40"
             style={{ background: "var(--accent)", color: "#04211d" }}
           >
-            Call customer
+            {voiceEnabled ? "Call customer" : "Call customer · no number"}
           </button>
         </header>
 

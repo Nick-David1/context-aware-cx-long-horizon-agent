@@ -18,6 +18,12 @@ export async function GET() {
   const byId = new Map(people.map((p) => [p.customerId, p]));
 
   return NextResponse.json({
+    // Outbound calling needs a phone number connected in ElevenLabs. Without one
+    // the dashboard disables the call button rather than offering an action that
+    // can only fail.
+    voiceEnabled: Boolean(
+      process.env.ELEVENLABS_AGENT_ID && process.env.ELEVENLABS_PHONE_NUMBER_ID,
+    ),
     cases: all.map((c) => ({
       ...c,
       _id: undefined,
