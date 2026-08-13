@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { collections, VECTOR_INDEX } from "./mongo";
-import { embedOne, rerank } from "./embeddings";
+import { collections } from "./mongo";
+import { config } from "./config";
+import { embedOne, maybeEmbed, rerank } from "./embeddings";
 import type { Memory, MemoryKind } from "./types";
 
 /**
@@ -14,26 +15,51 @@ import type { Memory, MemoryKind } from "./types";
  * They are separate searches rather than one, because a single top-k over the
  * whole collection lets a chatty customer's episodic notes crowd out the policy
  * that governs the action. Slice quotas keep each type represented.
+ *
+ * Each slice is two-stage: $vectorSearch over-fetches, then a cross-encoder
+ * reranks down to the quota. Vector search embeds query and document
+ * separately, which makes it fast over the whole collection and blunt at the
+ * top of the list; the cross-encoder reads the pair together and fixes exactly
+ * that. Reranking runs inside the aggregation via $rerank where the cluster
+ * supports it, and client-side otherwise.
  */
 
 export interface RecalledMemory {
   memoryId: string;
   kind: MemoryKind;
   text: string;
-  /** Cosine similarity from $vectorSearch. */
+  /** Vector similarity, or the reranked score once reranking has run. */
   score: number;
-  /** Cross-encoder relevance from the reranker, when it ran. */
+  /** Cross-encoder relevance, when reranking ran. */
   rerankScore?: number;
-  /** Lesson win rate, when known. Drives ordering and is shown in the UI. */
+  /** Lesson win rate, when known. Drives filtering and is shown in the UI. */
   winRate?: number;
 }
 
 /**
- * How many candidates to pull per slice before reranking. The reranker is only
- * as good as the shortlist it sees, and $vectorSearch is cheap — so fetch wide,
- * then let the cross-encoder cut it down to the quota.
+ * How many candidates to pull per slice before reranking. The cross-encoder can
+ * only promote what retrieval handed it, so fetching exactly the quota and then
+ * reranking reorders without improving anything.
  */
 const OVERFETCH = 4;
+
+/** Set once if the cluster rejects $rerank, so we stop trying. */
+let nativeRerankDowngraded = false;
+
+export function rerankPath(): "native" | "client" | "off" {
+  if (config.rerankMode === "off") return "off";
+  if (config.rerankMode === "native" && !nativeRerankDowngraded) return "native";
+  return "client";
+}
+
+function looksLikeMissingRerank(err: unknown): boolean {
+  const message = (err as Error)?.message?.toLowerCase() ?? "";
+  return (
+    message.includes("rerank") ||
+    message.includes("unrecognized pipeline stage") ||
+    message.includes("unknown stage")
+  );
+}
 
 interface SliceSpec {
   kind: MemoryKind;
@@ -42,7 +68,8 @@ interface SliceSpec {
 }
 
 async function searchSlice(
-  queryVector: number[],
+  query: string,
+  queryVector: number[] | null,
   spec: SliceSpec,
   tags: string[],
 ): Promise<RecalledMemory[]> {
@@ -55,29 +82,73 @@ async function searchSlice(
   };
   if (tags.length > 0) filter.tags = { $in: tags };
 
-  const docs = await memories
-    .aggregate<Memory & { score: number }>([
+  const overfetch = spec.limit * OVERFETCH;
+  const useNative = rerankPath() === "native";
+
+  const pipeline: Record<string, unknown>[] = [
+    {
+      $vectorSearch: {
+        index: config.vectorIndex,
+        // Auto mode targets the text field the autoEmbed index reads and hands
+        // MongoDB the raw query string; client mode targets the stored vector
+        // and hands it a precomputed one. Everything downstream is identical.
+        ...(config.embeddingMode === "auto"
+          ? { path: config.embedTextField, query }
+          : { path: "embedding", queryVector }),
+        // Over-fetch candidates: our filters are always selective (kind +
+        // customer scope), and selective pre-filters are exactly where HNSW
+        // recall degrades if the candidate pool is tight.
+        numCandidates: Math.max(overfetch * 20, 200),
+        limit: overfetch,
+        filter,
+      },
+    },
+    // Materialize the score into a real field before $rerank replaces $meta.
+    { $addFields: { score: { $meta: "vectorSearchScore" } } },
+  ];
+
+  if (useNative) {
+    pipeline.push(
       {
-        $vectorSearch: {
-          index: VECTOR_INDEX,
-          path: "embedding",
-          queryVector,
-          // Over-fetch candidates so the pre-filter has room to work.
-          numCandidates: Math.max(spec.limit * 20, 100),
-          limit: spec.limit,
-          filter,
+        $rerank: {
+          query: { text: query },
+          path: [config.embedTextField],
+          numDocsToRerank: overfetch,
+          model: config.rerankModel,
         },
       },
-      { $addFields: { score: { $meta: "vectorSearchScore" } } },
-      { $project: { embedding: 0 } },
-    ])
-    .toArray();
+      { $addFields: { rerankScore: { $meta: "score" } } },
+      { $addFields: { score: "$rerankScore" } },
+      { $limit: spec.limit },
+    );
+  }
+
+  pipeline.push({ $project: { embedding: 0 } });
+
+  let docs: (Memory & { score: number; rerankScore?: number })[];
+  try {
+    docs = await memories
+      .aggregate<Memory & { score: number; rerankScore?: number }>(pipeline)
+      .toArray();
+  } catch (err) {
+    if (!useNative || !looksLikeMissingRerank(err)) throw err;
+    // Cluster is below 8.3, or Native Reranking is off for the project.
+    // Downgrade once, permanently, and retry — the demo should not die over
+    // which tier of reranking is available.
+    nativeRerankDowngraded = true;
+    console.warn(
+      "  ($rerank unavailable — needs MongoDB 8.3 + Native Reranking enabled in\n" +
+        "   Atlas Project Settings. Falling back to client-side reranking.)",
+    );
+    return searchSlice(query, queryVector, spec, tags);
+  }
 
   return docs.map((d) => ({
     memoryId: d.memoryId,
     kind: d.kind,
     text: d.text,
     score: d.score,
+    rerankScore: d.rerankScore,
     winRate: winRate(d),
   }));
 }
@@ -107,60 +178,49 @@ export async function recall(opts: RecallOptions): Promise<RecalledMemory[]> {
     lessonLimit = 4,
   } = opts;
 
-  const queryVector = await embedOne(query, "query");
+  // In auto mode we never embed anything — MongoDB vectorizes the query string
+  // inside the database.
+  const queryVector =
+    config.embeddingMode === "client" ? await embedOne(query, "query") : null;
 
-  // Stage 1 — recall. Over-fetch each slice with $vectorSearch.
-  const [policies, episodic, lessons] = await Promise.all([
-    searchSlice(
-      queryVector,
-      { kind: "policy", customerId: null, limit: policyLimit * OVERFETCH },
-      tags,
+  const specs: SliceSpec[] = [
+    { kind: "policy", customerId: null, limit: policyLimit },
+    { kind: "episodic", customerId, limit: episodicLimit },
+    { kind: "lesson", customerId: null, limit: lessonLimit },
+  ];
+
+  const slices = await Promise.all(
+    specs.map((spec) =>
+      searchSlice(query, queryVector, spec, spec.kind === "episodic" ? [] : tags),
     ),
-    searchSlice(
-      queryVector,
-      { kind: "episodic", customerId, limit: episodicLimit * OVERFETCH },
-      [],
-    ),
-    searchSlice(
-      queryVector,
-      { kind: "lesson", customerId: null, limit: lessonLimit * OVERFETCH },
-      tags,
-    ),
-  ]);
+  );
 
-  // Stage 2 — precision. One rerank call over the whole shortlist, then apply
-  // per-slice quotas to the reranked order. Reranking across slices rather than
-  // within each one lets the cross-encoder compare a policy against a lesson,
-  // while the quotas still guarantee every slice is represented.
-  const candidates = [...policies, ...episodic, ...lessons];
-  const hits = await rerank(query, candidates.map((c) => c.text));
-
-  let ordered = candidates;
-  if (hits) {
-    for (const hit of hits) candidates[hit.index].rerankScore = hit.relevanceScore;
-    ordered = hits.map((h) => candidates[h.index]);
-  }
-
-  // Stage 3 — quotas and lesson credit. A lesson that has lost more than it won
-  // is actively misleading, so drop it and let reflection replace it.
-  const quota: Record<MemoryKind, number> = {
-    policy: policyLimit,
-    episodic: episodicLimit,
-    lesson: lessonLimit,
-  };
-  const taken: Record<MemoryKind, number> = { policy: 0, episodic: 0, lesson: 0 };
-
+  // Native reranking already trimmed each slice to its quota inside the
+  // pipeline. Otherwise rerank client-side, then trim.
+  const finished = rerankPath() === "native";
   const selected: RecalledMemory[] = [];
-  for (const m of ordered) {
-    if (taken[m.kind] >= quota[m.kind]) continue;
-    if (m.kind === "lesson" && m.winRate !== undefined && m.winRate < 0.4) continue;
-    taken[m.kind] += 1;
-    selected.push(m);
+
+  for (const [i, slice] of slices.entries()) {
+    const limit = specs[i].limit;
+    let ordered = slice;
+
+    if (!finished && rerankPath() === "client") {
+      const hits = await rerank(query, slice.map((m) => m.text));
+      if (hits) {
+        for (const hit of hits) slice[hit.index].rerankScore = hit.relevanceScore;
+        ordered = hits.map((h) => slice[h.index]);
+      }
+    }
+
+    // A lesson that has lost more than it won is actively misleading — drop it
+    // and let reflection replace it.
+    const kept = ordered.filter(
+      (m) => !(m.kind === "lesson" && m.winRate !== undefined && m.winRate < 0.4),
+    );
+    selected.push(...kept.slice(0, limit));
   }
 
-  // Group by kind for a stable, readable context block.
-  const order: MemoryKind[] = ["policy", "episodic", "lesson"];
-  return selected.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind));
+  return selected;
 }
 
 /** Renders recalled memories into the block that goes into the model's system prompt. */
@@ -197,15 +257,18 @@ export interface RememberInput {
 
 export async function remember(input: RememberInput): Promise<Memory> {
   const { memories } = await collections();
-  const embedding = await embedOne(input.text, "document");
   const now = new Date();
+
+  // undefined in auto mode: the document is written with no `embedding` field
+  // and MongoDB vectorizes `text` on write.
+  const embedding = await maybeEmbed(input.text);
 
   const doc: Memory = {
     memoryId: randomUUID(),
     kind: input.kind,
     customerId: input.customerId,
     text: input.text,
-    embedding,
+    ...(embedding ? { embedding } : {}),
     tags: input.tags ?? [],
     active: true,
     stats: input.kind === "lesson" ? { timesApplied: 0, wins: 0, losses: 0 } : undefined,

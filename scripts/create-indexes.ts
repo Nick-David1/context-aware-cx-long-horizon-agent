@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { MongoClient } from "mongodb";
-import { EMBEDDING_DIM } from "../src/lib/embeddings";
+import { config, assertConfig } from "../src/lib/config";
 
 /**
  * Creates the Atlas Vector Search index for the context engine, plus the regular
@@ -10,13 +10,63 @@ import { EMBEDDING_DIM } from "../src/lib/embeddings";
  * mongod — if you point MONGODB_URI at localhost this will fail.
  */
 
-const VECTOR_INDEX = "memory_vector_index";
+const filterFields = [
+  // Pre-filters. Without these the three-slice retrieval in memory.ts can't
+  // separate policy from episodic from lesson, and superseded memories would
+  // still be candidates.
+  { type: "filter", path: "kind" },
+  { type: "filter", path: "customerId" },
+  { type: "filter", path: "tags" },
+  { type: "filter", path: "active" },
+];
+
+/**
+ * Auto mode: MongoDB generates the embeddings itself from the text field, using
+ * a Voyage model — at index time as documents are written, and again at query
+ * time for the query string. No vector ever crosses the wire from us, and no
+ * model API key is needed in .env.
+ */
+const autoVectorDefinition = {
+  fields: [
+    {
+      type: "autoEmbed",
+      modality: "text",
+      path: config.embedTextField,
+      model: config.embedModel,
+    },
+    ...filterFields,
+  ],
+};
+
+/** Client mode: we supply the vector, so the index declares its shape. */
+const clientVectorDefinition = {
+  fields: [
+    {
+      type: "vector",
+      path: "embedding",
+      numDimensions: config.embeddingDims,
+      similarity: "cosine",
+    },
+    ...filterFields,
+  ],
+};
+
+const vectorDefinition =
+  config.embeddingMode === "auto" ? autoVectorDefinition : clientVectorDefinition;
+
+/** Auto and client indexes differ in *type*, which updateSearchIndex can't convert. */
+function modeOf(idx: Record<string, unknown> | undefined): "auto" | "client" | null {
+  const def = idx?.latestDefinition as { fields?: { type?: string }[] } | undefined;
+  if (!def?.fields) return null;
+  if (def.fields.some((f) => f.type === "autoEmbed")) return "auto";
+  if (def.fields.some((f) => f.type === "vector")) return "client";
+  return null;
+}
 
 async function main() {
-  const uri = process.env.MONGODB_URI;
-  if (!uri) throw new Error("MONGODB_URI is not set");
-  const client = await new MongoClient(uri).connect();
-  const db = client.db(process.env.MONGODB_DB ?? "cx_agent");
+  assertConfig();
+  const client = await new MongoClient(config.mongoUri).connect();
+  const db = client.db(config.dbName);
 
   const collectionNames = [
     "customers",
@@ -52,28 +102,47 @@ async function main() {
   console.log("regular indexes ready");
 
   const memories = db.collection("memories");
-  const existingSearch = await memories.listSearchIndexes().toArray();
+  const existingSearch = (await memories.listSearchIndexes().toArray()) as Record<
+    string,
+    unknown
+  >[];
+  const vectorIdx = existingSearch.find((i) => i.name === config.vectorIndex);
+  const existingMode = modeOf(vectorIdx);
 
-  if (existingSearch.some((i) => i.name === VECTOR_INDEX)) {
-    console.log(`vector index "${VECTOR_INDEX}" already exists — skipping`);
-  } else {
+  const label =
+    config.embeddingMode === "auto"
+      ? `auto-embed in Atlas via ${config.embedModel}`
+      : `${config.embeddingDims} dims, client-supplied`;
+
+  if (!vectorIdx) {
     await memories.createSearchIndex({
-      name: VECTOR_INDEX,
+      name: config.vectorIndex,
       type: "vectorSearch",
-      definition: {
-        fields: [
-          { type: "vector", path: "embedding", numDimensions: EMBEDDING_DIM, similarity: "cosine" },
-          // Pre-filters. Without these the three-slice retrieval in memory.ts
-          // can't separate policy from episodic from lesson.
-          { type: "filter", path: "kind" },
-          { type: "filter", path: "customerId" },
-          { type: "filter", path: "tags" },
-          { type: "filter", path: "active" },
-        ],
-      },
+      definition: vectorDefinition,
     });
-    console.log(`vector index "${VECTOR_INDEX}" created — Atlas takes ~1 minute to build it`);
+    console.log(`created vector index ${config.vectorIndex} (${label})`);
+  } else if (existingMode && existingMode !== config.embeddingMode) {
+    // Switching between auto and client changes the index type, not just its
+    // fields. Rebuild rather than failing cryptically at query time.
+    console.log(
+      `vector index is ${existingMode}-mode but EMBEDDING_MODE=${config.embeddingMode}`,
+    );
+    console.log("  dropping and recreating — the index type cannot be updated in place");
+    await memories.dropSearchIndex(config.vectorIndex);
+    await new Promise((r) => setTimeout(r, 3000)); // Atlas needs the name freed
+    await memories.createSearchIndex({
+      name: config.vectorIndex,
+      type: "vectorSearch",
+      definition: vectorDefinition,
+    });
+    console.log(`  recreated as ${label}`);
+    console.log("  NOTE: re-run `npm run db:seed` — documents need re-writing for the new mode");
+  } else {
+    console.log(`vector index ${config.vectorIndex} is current (${label})`);
   }
+
+  console.log("\nAtlas builds search indexes asynchronously — they usually go READY");
+  console.log("within ~1 minute. Run `npm run verify` to check status.");
 
   await client.close();
 }

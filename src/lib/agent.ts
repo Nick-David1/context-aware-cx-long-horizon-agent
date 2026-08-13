@@ -14,7 +14,10 @@ import {
 } from "./actions";
 import type { CaseRecord, Interaction, PlanStep } from "./types";
 
-const MODEL = "claude-opus-5";
+import { config } from "./config";
+
+const MODEL = config.agentModel;
+const REFLECTION_MODEL = config.reflectionModel;
 
 const client = new Anthropic();
 
@@ -466,7 +469,7 @@ export async function reflectOnCase(caseId: string): Promise<{ lessons: string[]
     .join("\n\n");
 
   const response = await client.messages.create({
-    model: MODEL,
+    model: REFLECTION_MODEL,
     max_tokens: 4000,
     output_config: { effort: "high" },
     system: `You review closed loan-servicing cases and extract lessons that will make future cases go better.

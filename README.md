@@ -22,7 +22,18 @@ Two things are missing from most LLM support agents:
 
 They're three separate vector searches rather than one top-k, because a chatty customer's notes will otherwise crowd out the policy that governs the action.
 
-Retrieval is two-stage. `$vectorSearch` over-fetches ~4× the quota per slice, then **`rerank-2.5`** — a cross-encoder — scores each candidate jointly against the query and the quotas are applied to *that* order. Vector search embeds query and document separately, which is what makes it fast over millions of docs and blunt at the top of the list; the reranker is the opposite. Both models are Voyage AI accessed through an Atlas model API key, so the entire retrieval stack — store, index, embed, rerank — is one vendor.
+Retrieval is two-stage. `$vectorSearch` over-fetches ~4× the quota per slice, then **`rerank-2.5`** — a cross-encoder — scores each candidate jointly against the query, and the quota is applied to *that* order. Vector search embeds query and document separately, which is what makes it fast over the whole collection and blunt at the top of the list; the cross-encoder reads the pair together and is the opposite. You can watch it work in the smoke test: for *"why did my payment get missed, money is tight"* the hardship-disclosure policy sits at vector rank #2 and the reranker promotes it to #1, above the generic hardship-plan description that scored higher on vocabulary overlap.
+
+**Both stages run inside MongoDB by default.** The vector index is declared `type: "autoEmbed"`, so Atlas generates embeddings from the `text` field on write *and* vectorizes the query string at read time — `$vectorSearch` receives `query`, not `queryVector`, and no vector ever crosses the wire. Reranking is the `$rerank` aggregation stage. MongoDB acquired Voyage AI in Feb 2025, so store, index, embed, and rerank are all one system.
+
+Two escape hatches, because neither is universally available:
+
+| Env | Default | Fallback |
+|---|---|---|
+| `EMBEDDING_MODE` | `auto` — Atlas embeds in-database, no key needed | `client` — we call the API and store vectors |
+| `RERANK_MODE` | `native` — `$rerank` stage, needs MongoDB 8.3 + Native Reranking enabled | `client` — we call the rerank API; `off` |
+
+`native` downgrades to `client` automatically the first time a cluster rejects the stage, so an 8.1 cluster still works without config changes.
 
 **A learning loop.** When a case closes:
 
@@ -67,17 +78,21 @@ ElevenLabs is wired in as the agent's **custom LLM**, not via per-tool webhooks.
 
 ```bash
 npm install
-cp .env.example .env      # fill in MONGODB_URI and ANTHROPIC_API_KEY at minimum
-npm run db:indexes        # creates the Atlas Vector Search index (~1 min to build)
+cp .env.example .env      # MONGODB_URI and ANTHROPIC_API_KEY are the only required values
+npm run db:indexes        # creates the autoEmbed vector index (~1 min to build)
+npm run verify            # confirms every credential and the index status
 npm run db:seed           # 3 customers, 3 open cases, policy corpus, seeded lessons
+npm run smoke             # proves retrieval returns sensible context
 npm run dev
 ```
 
 Open http://localhost:3000.
 
-You need an **Atlas** cluster — M0 free tier is fine. Vector Search doesn't exist on a local `mongod`, so `npm run db:indexes` will fail against localhost.
+You need an **Atlas** cluster — M0 free tier is fine. Vector Search doesn't exist on a local `mongod`, so `db:indexes` will fail against localhost.
 
-`VOYAGE_API_KEY` comes from the Atlas UI — **AI Model APIs → Create model API key**. It covers both `voyage-4-large` (embeddings) and `rerank-2.5` (reranking). It's optional: without it the app falls back to a local hashing embedder and skips reranking, so everything still runs but retrieval quality drops a lot. Set it before demoing.
+In the default `auto`/`native` modes **no model API key is required** — Atlas holds it. Set `VOYAGE_API_KEY` (Atlas UI → **AI Model APIs → Create model API key**) only if you switch either mode to `client`. Note there are two incompatible surfaces: an Atlas model key works against `ai.mongodb.com` and a voyageai.com key against `api.voyageai.com`; crossing them returns 403.
+
+`verify` checks each dependency independently and `smoke` exercises the real retrieval path, so a failure names the thing that's actually wrong instead of surfacing three layers deep at demo time.
 
 ## Demo script
 
@@ -115,7 +130,8 @@ Create the agent in the ElevenLabs dashboard first and put its id in `ELEVENLABS
 src/lib/
   types.ts        domain model
   mongo.ts        Atlas client + collection handles
-  embeddings.ts   voyage-4-large + rerank-2.5 via Atlas, with a local fallback
+  config.ts       embedding/rerank modes, model ids, base URLs
+  embeddings.ts   client-side embed + rerank (only used outside auto/native mode)
   memory.ts       the context engine: recall, remember, supersede, score
   actions.ts      servicing actions + the eligibility rules that gate them
   agent.ts        Claude tool loop + the reflection pass
@@ -128,7 +144,9 @@ src/app/api/
   voice/outbound/         place a call for a case
   memories/               browse or vector-search the context engine
 scripts/
-  create-indexes.ts  db:indexes
+  create-indexes.ts  db:indexes (autoEmbed or client vector index)
+  verify.ts          verify
+  smoke.ts           smoke
   seed.ts            db:seed
   tick.ts            tick
   sync-elevenlabs-agent.ts  agent:sync

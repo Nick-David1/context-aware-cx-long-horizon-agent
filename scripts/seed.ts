@@ -2,6 +2,7 @@ import "dotenv/config";
 import { collections } from "../src/lib/mongo";
 import { remember } from "../src/lib/memory";
 import { usingRealEmbeddings } from "../src/lib/embeddings";
+import { config } from "../src/lib/config";
 import type { Customer, CaseRecord, Loan } from "../src/lib/types";
 
 /**
@@ -224,8 +225,8 @@ async function main() {
 
   console.log(
     usingRealEmbeddings()
-      ? "Embedding with voyage-4-large via the Atlas model API."
-      : "VOYAGE_API_KEY unset — using the local fallback embedder (lower retrieval quality, no reranking).",
+      ? `Embeddings: ${config.embeddingMode} mode${config.embeddingMode === "auto" ? " — Atlas vectorizes on write" : ` via ${config.embedModel}`}.`
+      : "VOYAGE_API_KEY unset in client mode — using the local fallback embedder (much worse retrieval).",
   );
 
   await Promise.all([

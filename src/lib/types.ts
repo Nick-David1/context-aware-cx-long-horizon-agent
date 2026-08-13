@@ -108,7 +108,11 @@ export interface Memory {
   /** null scope = applies to every customer. */
   customerId: string | null;
   text: string;
-  embedding: number[];
+  /**
+   * Only present in client embedding mode. In auto mode the document is written
+   * without it and MongoDB vectorizes `text` on write.
+   */
+  embedding?: number[];
   /** Tags used as Atlas Vector Search pre-filters. */
   tags: string[];
   /** Lessons track how they performed so retrieval can prefer what works. */
