@@ -74,6 +74,11 @@ export default function Dashboard() {
 
   useEffect(() => {
     void loadCases();
+    // Poll so the board stays live during an ElevenLabs voice call. Voice turns
+    // go through /api/llm, not /api/chat, so without this the case status, plan,
+    // and loan figures only refresh when someone types in this window.
+    const t = setInterval(() => void loadCases(), 2500);
+    return () => clearInterval(t);
   }, [loadCases]);
 
   useEffect(() => {
