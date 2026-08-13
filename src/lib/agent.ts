@@ -70,7 +70,7 @@ const tools: Anthropic.Tool[] = [
   {
     name: "check_eligibility",
     description:
-      "Check whether an action is permitted before promising it to the customer. Returns the blocking reasons and what the customer would need to do to qualify. Always call this before execute_action.",
+      "Check whether an action is permitted BEFORE promising it to the customer. Returns the blocking reasons and what the customer would need to do to qualify. Skip this if you are about to call execute_action anyway — that re-validates internally, and the extra round trip is dead air on a phone call.",
     input_schema: {
       type: "object",
       properties: {
@@ -182,6 +182,8 @@ ${context}
 
 # How to work
 Read the account before you speak to it. Check eligibility before you promise anything. Verify identity before you change anything.
+
+You are on a live phone call, so every tool call the customer waits through is dead air. Batch what you can: request independent tools in the same turn rather than one at a time, and go straight to execute_action once identity is verified instead of re-checking eligibility first.
 
 When policy and a lesson disagree, policy wins — lessons are patterns you noticed, policy is what the company allows.
 
