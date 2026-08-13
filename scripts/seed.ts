@@ -62,9 +62,12 @@ const loans: Loan[] = [
     termMonths: 60,
     monthlyPayment: 612.4,
     paymentDayOfMonth: 3,
-    status: "current",
-    latePayments12mo: 0,
-    pastDueAmount: 0,
+    // Slightly past due on purpose. It makes one customer tell the whole story:
+    // the goal is blocked, the agent plans around it, re-engages later, and only
+    // then closes — instead of a happy path that skips every interesting branch.
+    status: "delinquent",
+    latePayments12mo: 1,
+    pastDueAmount: 187.4,
     openedAt: daysAgo(900),
   },
   {

@@ -13,13 +13,17 @@ export const maxDuration = 120;
  * would do. Run it on a cron (Vercel Cron, GitHub Actions, or `npm run tick`).
  */
 export async function POST(req: Request) {
-  const dryRun = new URL(req.url).searchParams.get("dryRun") === "true";
+  const url = new URL(req.url);
+  const dryRun = url.searchParams.get("dryRun") === "true";
+  // `upcoming` also lists follow-ups the agent has scheduled for later, so the
+  // proactive-engagement story is visible without waiting for the clock.
+  const upcoming = url.searchParams.get("upcoming") === "true";
   const { cases, customers } = await collections();
 
   const due = await cases
     .find({
       status: { $in: ["open", "waiting_on_customer"] },
-      nextActionAt: { $lte: new Date() },
+      nextActionAt: upcoming ? { $exists: true } : { $lte: new Date() },
     })
     .limit(20)
     .toArray();
@@ -35,6 +39,8 @@ export async function POST(req: Request) {
         customer: customer.name,
         wouldCall: customer.phone,
         reason: kase.nextActionReason,
+        dueAt: kase.nextActionAt,
+        due: (kase.nextActionAt?.getTime() ?? 0) <= Date.now(),
         placed: false,
       });
       continue;

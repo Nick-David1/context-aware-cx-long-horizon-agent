@@ -25,6 +25,7 @@ const kase = await cases.findOne({ caseId: "CASE-DEMO0001" });
 
 const checks: [string, unknown, unknown][] = [
   ["payment day", loan?.paymentDayOfMonth, 3],
+  ["past due", loan?.pastDueAmount, 187.4],
   ["90-day clock", loan?.lastPaymentDateChangeAt ?? null, null],
   ["identity verified", dana?.identityVerified, false],
   ["case status", kase?.status, "open"],
