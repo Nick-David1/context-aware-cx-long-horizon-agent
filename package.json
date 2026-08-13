@@ -12,6 +12,7 @@
     "smoke": "tsx scripts/smoke.ts",
     "db:indexes": "tsx scripts/create-indexes.ts",
     "db:seed": "tsx scripts/seed.ts",
+    "demo:reset": "tsx scripts/reset-demo.ts",
     "agent:sync": "tsx scripts/sync-elevenlabs-agent.ts",
     "tick": "tsx scripts/tick.ts"
   },

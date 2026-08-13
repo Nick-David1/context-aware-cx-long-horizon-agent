@@ -93,6 +93,17 @@ export async function validateAction(
       const day = Number(input.params.newPaymentDayOfMonth);
       if (!Number.isInteger(day) || day < 1 || day > 28) {
         reasons.push("New payment day must be a whole number between 1 and 28.");
+        break;
+      }
+      // Asking for the day it is already on is a no-op, not a change. Without
+      // this, an agent that just made the change and then re-checks gets told
+      // the 90-day rule blocks it — and tells the customer it cannot do the
+      // thing it did thirty seconds ago.
+      if (day === loan.paymentDayOfMonth) {
+        return {
+          allowed: true,
+          reasons: [`Payment date is already the ${ordinal(day)} — no change needed.`],
+        };
       }
       if (loan.status === "default") {
         reasons.push("Payment date changes are not allowed on loans in default.");
@@ -177,6 +188,15 @@ export async function executeAction(
   switch (input.action) {
     case "change_payment_date": {
       const day = Number(input.params.newPaymentDayOfMonth);
+      // No-op: don't touch the 90-day clock or write a memory for a change
+      // that isn't one.
+      if (day === loan.paymentDayOfMonth) {
+        return {
+          executed: false,
+          summary: `Payment date is already the ${ordinal(day)} of each month — nothing to change.`,
+          details: { alreadySet: true, day },
+        };
+      }
       await loans.updateOne(
         { loanId: loan.loanId },
         { $set: { paymentDayOfMonth: day, lastPaymentDateChangeAt: new Date() } },
