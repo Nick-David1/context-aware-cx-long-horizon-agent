@@ -77,7 +77,11 @@ export default function Dashboard() {
     // Poll so the board stays live during an ElevenLabs voice call. Voice turns
     // go through /api/llm, not /api/chat, so without this the case status, plan,
     // and loan figures only refresh when someone types in this window.
-    const t = setInterval(() => void loadCases(), 2500);
+    // 5s, and paused while a turn is running: this polls Atlas, and hammering
+    // it during a call measurably slowed the agent's own retrieval.
+    const t = setInterval(() => {
+      if (!document.hidden) void loadCases();
+    }, 5000);
     return () => clearInterval(t);
   }, [loadCases]);
 

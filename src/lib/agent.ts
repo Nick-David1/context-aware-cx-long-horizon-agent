@@ -288,7 +288,7 @@ function planText(kase: CaseRecord): string {
  * return the reply plus a full audit trail. Both the chat surface and the
  * ElevenLabs voice agent go through this.
  */
-export async function runAgentTurn(args: {
+export interface AgentTurnArgs {
   caseId: string;
   customerMessage: string;
   channel: "voice" | "chat" | "sms";
@@ -296,7 +296,36 @@ export async function runAgentTurn(args: {
   history?: { role: "customer" | "agent"; text: string }[];
   /** Called with each text delta as the model produces it. */
   onText?: (delta: string) => void;
-}): Promise<AgentTurnResult> {
+}
+
+/**
+ * Turns currently executing, keyed by case + message.
+ *
+ * ElevenLabs re-sends a turn it considers slow. Both copies used to run: the
+ * second found the first's in-flight checkpoint, resumed it mid-execution, and
+ * two tool loops interleaved against the same case — double side effects, and a
+ * garbled stream that failed the conversation. A retry now attaches to the
+ * running turn instead of starting a second one. It streams nothing of its own,
+ * so the route sends it the assembled reply when the shared turn resolves.
+ *
+ * In-process only, which is right for one server. Behind several replicas this
+ * would need a lease on the checkpoint document instead.
+ */
+const inFlightTurns = new Map<string, Promise<AgentTurnResult>>();
+
+export function runAgentTurn(args: AgentTurnArgs): Promise<AgentTurnResult> {
+  const key = `${args.caseId}::${args.customerMessage}`;
+  const running = inFlightTurns.get(key);
+  if (running) {
+    console.log(`[llm] duplicate turn for ${args.caseId} — attaching to the running one`);
+    return running;
+  }
+  const turn = executeTurn(args).finally(() => inFlightTurns.delete(key));
+  inFlightTurns.set(key, turn);
+  return turn;
+}
+
+async function executeTurn(args: AgentTurnArgs): Promise<AgentTurnResult> {
   const { cases, interactions } = await collections();
   const kase = await cases.findOne({ caseId: args.caseId });
   if (!kase) throw new Error(`Case ${args.caseId} not found`);
