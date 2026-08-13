@@ -2,7 +2,7 @@ import "dotenv/config";
 import { collections } from "../src/lib/mongo";
 import { remember } from "../src/lib/memory";
 import { usingRealEmbeddings } from "../src/lib/embeddings";
-import type { Customer, HorizonCase, Loan } from "../src/lib/types";
+import type { Customer, CaseRecord, Loan } from "../src/lib/types";
 
 /**
  * Seeds a demo book of business: three customers, their loans, open cases, the
@@ -98,7 +98,7 @@ const loans: Loan[] = [
   },
 ];
 
-const cases: HorizonCase[] = [
+const cases: CaseRecord[] = [
   {
     caseId: "CASE-DEMO0001",
     customerId: "CUST-1001",

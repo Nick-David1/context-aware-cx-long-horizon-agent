@@ -61,14 +61,14 @@ export async function syncAgentToCustomLLM(baseUrl: string): Promise<unknown> {
         agent: {
           first_message:
             "Hi, this is Meridian Lending calling about your auto loan. Is now an okay time?",
-          // Horizon owns reasoning, memory, and every account action. The prompt
+          // Our orchestrator owns reasoning, memory, and every account action. The prompt
           // here only carries the case id through to our endpoint.
           prompt: {
             prompt: "case:{{caseId}}",
             llm: "custom-llm",
             custom_llm: {
               url: `${baseUrl}/api/llm`,
-              model_id: "horizon",
+              model_id: "cx-agent",
               api_key: { secret_id: "" },
             },
           },

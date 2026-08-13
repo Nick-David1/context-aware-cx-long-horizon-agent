@@ -12,7 +12,7 @@ import {
   type ActionInput,
   type ActionName,
 } from "./actions";
-import type { HorizonCase, Interaction, PlanStep } from "./types";
+import type { CaseRecord, Interaction, PlanStep } from "./types";
 
 const MODEL = "claude-opus-5";
 
@@ -167,7 +167,7 @@ const tools: Anthropic.Tool[] = [
   },
 ];
 
-function systemPrompt(kase: HorizonCase, context: string, planText: string): string {
+function systemPrompt(kase: CaseRecord, context: string, planText: string): string {
   return `You are a loan servicing agent for Meridian Lending. You work a case toward a goal over days or weeks, across many separate conversations — not one call at a time.
 
 Case ${kase.caseId}: goal is "${kase.goal}", currently ${kase.status}, attempt ${kase.attempts + 1}.
@@ -189,7 +189,7 @@ Speak the way a good human agent does on the phone: short sentences, no lists, n
 Before the conversation ends, call set_plan with where things stand and when to follow up. If the goal is settled either way, call close_case instead.`;
 }
 
-function planText(kase: HorizonCase): string {
+function planText(kase: CaseRecord): string {
   if (kase.plan.length === 0) return "No plan yet — build one this turn.";
   const lines = kase.plan.map((s) => `- [${s.status}] ${s.description}`);
   return `# Current plan\n${lines.join("\n")}`;
@@ -325,7 +325,7 @@ export async function runAgentTurn(args: {
 }
 
 async function runTool(
-  kase: HorizonCase,
+  kase: CaseRecord,
   name: string,
   rawInput: unknown,
   memoriesUsed: RecalledMemory[],

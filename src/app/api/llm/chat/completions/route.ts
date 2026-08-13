@@ -9,7 +9,7 @@ export const maxDuration = 60;
  *
  * ElevenLabs Conversational AI points here as its "custom LLM": it handles
  * speech-to-text, turn-taking, and text-to-speech, and calls this for every
- * customer utterance. Horizon supplies the reasoning, memory, and account
+ * customer utterance. This service supplies the reasoning, memory, and account
  * actions — so the voice agent has the full case context automatically, with
  * no per-tool webhook plumbing.
  */
@@ -69,7 +69,7 @@ export async function POST(req: Request) {
       id,
       object: "chat.completion",
       created,
-      model: "horizon",
+      model: "cx-agent",
       choices: [
         {
           index: 0,
@@ -93,7 +93,7 @@ export async function POST(req: Request) {
               id,
               object: "chat.completion.chunk",
               created,
-              model: "horizon",
+              model: "cx-agent",
               choices: [{ index: 0, delta, finish_reason: finish }],
             })}\n\n`,
           ),

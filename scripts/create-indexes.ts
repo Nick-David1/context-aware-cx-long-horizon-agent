@@ -16,7 +16,7 @@ async function main() {
   const uri = process.env.MONGODB_URI;
   if (!uri) throw new Error("MONGODB_URI is not set");
   const client = await new MongoClient(uri).connect();
-  const db = client.db(process.env.MONGODB_DB ?? "horizon");
+  const db = client.db(process.env.MONGODB_DB ?? "cx_agent");
 
   const collectionNames = [
     "customers",

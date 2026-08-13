@@ -55,7 +55,7 @@ export interface PlanStep {
   completedAt?: Date;
 }
 
-export interface HorizonCase {
+export interface CaseRecord {
   _id?: ObjectId;
   caseId: string;
   customerId: string;

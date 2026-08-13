@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { collections } from "./mongo";
 import { remember, scoreLessons } from "./memory";
-import type { CaseGoal, Customer, HorizonCase, Loan, PlanStep } from "./types";
+import type { CaseGoal, Customer, CaseRecord, Loan, PlanStep } from "./types";
 
 /**
  * Write actions the agent can take, plus the deterministic eligibility rules that
@@ -304,10 +304,10 @@ export async function openCase(
   customerId: string,
   goal: CaseGoal,
   loanId?: string,
-): Promise<HorizonCase> {
+): Promise<CaseRecord> {
   const { cases } = await collections();
   const now = new Date();
-  const kase: HorizonCase = {
+  const kase: CaseRecord = {
     caseId: `CASE-${randomUUID().slice(0, 8).toUpperCase()}`,
     customerId,
     loanId,

@@ -125,7 +125,7 @@ export default function Dashboard() {
       {/* Case queue */}
       <aside className="overflow-y-auto border-r" style={{ borderColor: "var(--border)" }}>
         <div className="p-4 pb-2">
-          <h1 className="text-lg font-semibold tracking-tight">Horizon</h1>
+          <h1 className="text-lg font-semibold tracking-tight">Context-Aware CX</h1>
           <p className="text-xs" style={{ color: "var(--muted)" }}>
             Long-horizon servicing agent
           </p>

@@ -1,8 +1,8 @@
-# Horizon
+# Context-Aware CX — Long-Horizon Agent
 
 A long-horizon customer service agent that learns over time.
 
-Most AI support agents handle one conversation and forget it. Horizon works a **case** — "get this loan refinanced", "collect this past-due balance" — across days, calls, and channels, and gets better at that class of case every time one closes.
+Most AI support agents handle one conversation and forget it. This one works a **case** — "get this loan refinanced", "collect this past-due balance" — across days, calls, and channels, and gets better at that class of case every time one closes.
 
 Built on **MongoDB Atlas** (structured case state + Vector Search context engine), **Claude** (reasoning, planning, reflection), and **ElevenLabs Conversational AI** (voice).
 
@@ -12,7 +12,7 @@ Built on **MongoDB Atlas** (structured case state + Vector Search context engine
 
 Two things are missing from most LLM support agents:
 
-**Local context.** The policies, edge cases, and tribal knowledge that define how a specific business actually operates. RAG injects snippets at inference time and throws them away. Horizon keeps a durable, structured context layer in Atlas and retrieves from three slices of it on every turn:
+**Local context.** The policies, edge cases, and tribal knowledge that define how a specific business actually operates. RAG injects snippets at inference time and throws them away. This system keeps a durable, structured context layer in Atlas and retrieves from three slices of it on every turn:
 
 | Slice | What it is | Scope |
 |---|---|---|
@@ -40,7 +40,7 @@ The result compounds: the hundredth refinance case is worked better than the fir
                     └───────────────┬──────────────┘
                                     │  custom LLM (OpenAI-compatible)
                     ┌───────────────▼──────────────┐
-   dashboard chat ──│    Horizon orchestrator      │  Claude + tool loop
+   dashboard chat ──│    Case orchestrator         │  Claude + tool loop
                     └───┬──────────────────────┬───┘
                         │                      │
               ┌─────────▼────────┐   ┌─────────▼─────────┐
@@ -57,7 +57,7 @@ The result compounds: the hundredth refinance case is worked better than the fir
                     └───────────────────────────────┘
 ```
 
-ElevenLabs is wired in as the agent's **custom LLM**, not via per-tool webhooks. It owns voice; Horizon owns reasoning, memory, and every account action. The phone call and the dashboard chat run through the exact same orchestrator, so there's no drift between channels.
+ElevenLabs is wired in as the agent's **custom LLM**, not via per-tool webhooks. It owns voice; the orchestrator owns reasoning, memory, and every account action. The phone call and the dashboard chat run through the exact same orchestrator, so there's no drift between channels.
 
 **Write actions are gated by deterministic code, not by the prompt.** The model *proposes* an action; `src/lib/actions.ts` decides whether it's allowed. A hallucinated proposal fails validation instead of moving money.
 

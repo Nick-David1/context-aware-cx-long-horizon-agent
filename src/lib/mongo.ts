@@ -2,7 +2,7 @@ import { MongoClient, type Db, type Collection } from "mongodb";
 import type {
   Checkpoint,
   Customer,
-  HorizonCase,
+  CaseRecord,
   Interaction,
   Loan,
   Memory,
@@ -12,7 +12,7 @@ import type {
 // Next dev server hot-reloads modules; cache the client on globalThis so we don't
 // open a new connection pool on every reload. Connect lazily — a module-scope
 // connect() fires during `next build` and fails the page-data collection pass.
-const globalForMongo = globalThis as unknown as { _horizonMongo?: Promise<MongoClient> };
+const globalForMongo = globalThis as unknown as { _cxMongo?: Promise<MongoClient> };
 
 function connect(): Promise<MongoClient> {
   const uri = process.env.MONGODB_URI;
@@ -20,19 +20,19 @@ function connect(): Promise<MongoClient> {
     throw new Error("MONGODB_URI is not set — copy .env.example to .env and fill it in.");
   }
   const promise = new MongoClient(uri).connect();
-  globalForMongo._horizonMongo = promise;
+  globalForMongo._cxMongo = promise;
   return promise;
 }
 
 export async function getDb(): Promise<Db> {
-  const client = await (globalForMongo._horizonMongo ?? connect());
-  return client.db(process.env.MONGODB_DB ?? "horizon");
+  const client = await (globalForMongo._cxMongo ?? connect());
+  return client.db(process.env.MONGODB_DB ?? "cx_agent");
 }
 
 export async function collections(): Promise<{
   customers: Collection<Customer>;
   loans: Collection<Loan>;
-  cases: Collection<HorizonCase>;
+  cases: Collection<CaseRecord>;
   interactions: Collection<Interaction>;
   memories: Collection<Memory>;
   outcomes: Collection<Outcome>;
@@ -43,7 +43,7 @@ export async function collections(): Promise<{
     checkpoints: db.collection<Checkpoint>("checkpoints"),
     customers: db.collection<Customer>("customers"),
     loans: db.collection<Loan>("loans"),
-    cases: db.collection<HorizonCase>("cases"),
+    cases: db.collection<CaseRecord>("cases"),
     interactions: db.collection<Interaction>("interactions"),
     memories: db.collection<Memory>("memories"),
     outcomes: db.collection<Outcome>("outcomes"),
