@@ -224,8 +224,31 @@ export async function runAgentTurn(args: {
 
   // Resume a turn that died partway through its tool loop rather than replaying
   // side effects. See Checkpoint in types.ts.
+  //
+  // Only ever resume a retry of the SAME customer message, and only recently.
+  // A checkpoint from the previous turn must not be adopted by the next one:
+  // its message array ends in tool results, so the model would answer the old
+  // turn and the customer's new message would be dropped on the floor.
+  const CHECKPOINT_TTL_MS = 5 * 60_000;
   const { checkpoints } = await collections();
-  const resumed = await checkpoints.findOne({ caseId: args.caseId, status: "in_flight" });
+  const candidate = await checkpoints.findOne({
+    caseId: args.caseId,
+    status: "in_flight",
+  });
+
+  const resumable =
+    candidate &&
+    candidate.customerMessage === args.customerMessage &&
+    Date.now() - candidate.updatedAt.getTime() < CHECKPOINT_TTL_MS;
+
+  if (candidate && !resumable) {
+    await checkpoints.updateOne(
+      { caseId: args.caseId },
+      { $set: { status: "abandoned", updatedAt: new Date() } },
+    );
+  }
+
+  const resumed = resumable ? candidate : null;
 
   const messages: Anthropic.MessageParam[] = resumed
     ? (resumed.messages as Anthropic.MessageParam[])
@@ -293,6 +316,7 @@ export async function runAgentTurn(args: {
       {
         $set: {
           caseId: kase.caseId,
+          customerMessage: args.customerMessage,
           messages,
           completedTools: actionLog,
           step: i + 1,

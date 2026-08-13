@@ -48,6 +48,14 @@ export async function POST(req: Request) {
   const body = (await req.json()) as ChatRequest;
   const caseId = extractCaseId(body);
 
+  // Log the shape of what the caller actually sent. ElevenLabs failures surface
+  // only as an opaque "LLM Cascade Error" on their side, so the request shape
+  // is the only ground truth available for debugging.
+  console.log(
+    `[llm] ${req.method} stream=${body.stream} msgs=${body.messages?.length} ` +
+      `case=${caseId} params=${Object.keys(body).join(",")}`,
+  );
+
   if (!caseId) {
     return NextResponse.json(
       { error: "No caseId. Put `case:{{caseId}}` in the ElevenLabs agent prompt." },
@@ -86,9 +94,6 @@ export async function POST(req: Request) {
           }
         };
 
-        const heartbeat = setInterval(() => enqueue(": keepalive\n\n"), 2000);
-        enqueue(": open\n\n");
-
         const chunk = (delta: Record<string, unknown>, finish: string | null) =>
           enqueue(
             `data: ${JSON.stringify({
@@ -100,6 +105,17 @@ export async function POST(req: Request) {
             })}\n\n`,
           );
 
+        // Strictly conventional OpenAI chunk sequence: a role-only chunk first,
+        // then content, then a finish chunk. Do NOT use SSE comment lines (":
+        // keepalive") to hold the connection — they are valid SSE but many
+        // OpenAI-compatible parsers reject a stream that opens with one.
+        //
+        // The role chunk doubles as the keepalive: it goes out immediately, so
+        // the socket carries real data while the tool loop runs, and empty
+        // content deltas below extend that without adding to the transcript.
+        chunk({ role: "assistant", content: "" }, null);
+        const heartbeat = setInterval(() => chunk({ content: "" }, null), 2000);
+
         try {
           const result = await runAgentTurn({
             caseId,
@@ -108,8 +124,14 @@ export async function POST(req: Request) {
             history,
           });
           clearInterval(heartbeat);
-          chunk({ role: "assistant", content: result.reply }, null);
+          // Never emit an empty completion — a blank content chunk is itself
+          // enough for ElevenLabs to fail the whole conversation.
+          const reply =
+            result.reply?.trim() ||
+            "Sorry, could you say that again?";
+          chunk({ content: reply }, null);
           chunk({}, "stop");
+          console.log(`[llm] case=${caseId} replied ${reply.length} chars`);
         } catch (err) {
           clearInterval(heartbeat);
           console.error("agent turn failed:", err);

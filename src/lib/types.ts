@@ -146,6 +146,14 @@ export interface Memory {
 export interface Checkpoint {
   _id?: ObjectId;
   caseId: string;
+  /**
+   * The customer message this turn is answering.
+   *
+   * Resume is only valid for a retry of the *same* turn. Without this, the next
+   * turn in a live conversation adopts the previous turn's message array and
+   * silently drops what the customer just said.
+   */
+  customerMessage: string;
   /** Anthropic message array as of the last completed step. */
   messages: unknown[];
   /** Tool calls already executed this turn — replay guard. */
