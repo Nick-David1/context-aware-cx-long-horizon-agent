@@ -2,9 +2,14 @@ import "dotenv/config";
 import { syncAgentToCustomLLM } from "../src/lib/elevenlabs";
 
 /**
- * Points your ElevenLabs Conversational AI agent at this deployment as its
- * custom LLM. Run it after starting a tunnel, with PUBLIC_BASE_URL set to the
- * tunnel's https URL.
+ * Re-points the ElevenLabs agent at the current PUBLIC_BASE_URL.
+ *
+ * Run after every tunnel restart — a cloudflared quick tunnel gets a new
+ * hostname each time, and the agent stores the URL, so a stale one means the
+ * call connects and the agent then says nothing.
+ *
+ *   npm run agent:sync                  # {{caseId}}, populated by outbound calls
+ *   npm run agent:sync CASE-DEMO0002    # pin one case, for widget testing
  */
 const base = process.env.PUBLIC_BASE_URL;
 if (!base || base.includes("your-tunnel")) {
@@ -12,6 +17,8 @@ if (!base || base.includes("your-tunnel")) {
   process.exit(1);
 }
 
-const result = await syncAgentToCustomLLM(base);
-console.log(`Agent now calls ${base}/api/llm/chat/completions`);
-console.log(JSON.stringify(result, null, 2));
+const caseId = process.argv[2];
+await syncAgentToCustomLLM(base, caseId);
+
+console.log(`agent → ${base}/api/llm/chat/completions`);
+console.log(`case   → ${caseId ?? "{{caseId}} (injected per outbound call)"}`);

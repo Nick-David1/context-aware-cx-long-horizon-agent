@@ -13,6 +13,27 @@ import type { CaseGoal, Customer, CaseRecord, Loan, PlanStep } from "./types";
  * moving money.
  */
 
+/**
+ * "1st", "2nd", "3rd", "21st" — not "3th".
+ *
+ * These strings are read aloud by a text-to-speech engine and stored as
+ * episodic memories, so a naive `${day}th` is audible and permanent.
+ */
+function ordinal(day: number): string {
+  const rem100 = day % 100;
+  if (rem100 >= 11 && rem100 <= 13) return `${day}th`;
+  switch (day % 10) {
+    case 1:
+      return `${day}st`;
+    case 2:
+      return `${day}nd`;
+    case 3:
+      return `${day}rd`;
+    default:
+      return `${day}th`;
+  }
+}
+
 export type ActionName =
   | "change_payment_date"
   | "start_refinance_application"
@@ -160,7 +181,7 @@ export async function executeAction(
         { loanId: loan.loanId },
         { $set: { paymentDayOfMonth: day, lastPaymentDateChangeAt: new Date() } },
       );
-      summary = `Payment date moved from the ${loan.paymentDayOfMonth}th to the ${day}th of each month.`;
+      summary = `Payment date moved from the ${ordinal(loan.paymentDayOfMonth)} to the ${ordinal(day)} of each month.`;
       details = { previousDay: loan.paymentDayOfMonth, newDay: day };
       break;
     }

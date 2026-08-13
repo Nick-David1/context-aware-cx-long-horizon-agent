@@ -37,6 +37,14 @@ function extractCaseId(body: ChatRequest): string | null {
 }
 
 export async function POST(req: Request) {
+  // This endpoint is reachable from the public internet through the tunnel, and
+  // it can spend model tokens and mutate loan records. ElevenLabs sends the
+  // shared secret as a custom request header (custom_llm.request_headers).
+  const expected = process.env.TOOL_WEBHOOK_SECRET;
+  if (expected && req.headers.get("x-cx-secret") !== expected) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+
   const body = (await req.json()) as ChatRequest;
   const caseId = extractCaseId(body);
 
