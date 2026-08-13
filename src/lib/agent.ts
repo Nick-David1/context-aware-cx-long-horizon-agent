@@ -14,7 +14,7 @@ import {
 } from "./actions";
 import type { CaseRecord, Interaction, PlanStep } from "./types";
 
-import { config } from "./config";
+import { config, supportsEffort } from "./config";
 
 const MODEL = config.agentModel;
 const REFLECTION_MODEL = config.reflectionModel;
@@ -253,7 +253,8 @@ export async function runAgentTurn(args: {
       model: MODEL,
       max_tokens: 8000,
       // Voice needs a fast turn; the deep planning happens in reflection instead.
-      output_config: { effort: "low" },
+      // Dropped entirely on models that reject the parameter (Haiku 4.5).
+      ...(supportsEffort(MODEL) ? { output_config: { effort: "low" as const } } : {}),
       system,
       tools,
       messages,
@@ -471,7 +472,9 @@ export async function reflectOnCase(caseId: string): Promise<{ lessons: string[]
   const response = await client.messages.create({
     model: REFLECTION_MODEL,
     max_tokens: 4000,
-    output_config: { effort: "high" },
+    ...(supportsEffort(REFLECTION_MODEL)
+      ? { output_config: { effort: "high" as const } }
+      : {}),
     system: `You review closed loan-servicing cases and extract lessons that will make future cases go better.
 
 A good lesson is a generalization that would change what the agent does next time — a tactic that worked, an objection with a rebuttal that landed, an eligibility trap that wasted the customer's time, a signal that predicted the outcome early.

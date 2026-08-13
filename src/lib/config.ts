@@ -92,6 +92,16 @@ export const config = {
 };
 
 /**
+ * Whether a model accepts `output_config.effort`.
+ *
+ * Haiku 4.5 and Sonnet 4.5 reject it outright with a 400, so a latency-driven
+ * swap to Haiku breaks every request unless the parameter is dropped with it.
+ */
+export function supportsEffort(model: string): boolean {
+  return /^claude-(opus-(4-5|4-6|4-7|4-8|5)|sonnet-(4-6|5)|fable-5|mythos-5)/.test(model);
+}
+
+/**
  * Call at the top of any command that talks to a service.
  *
  * In auto mode the model key lives on the Atlas cluster, configured in the
