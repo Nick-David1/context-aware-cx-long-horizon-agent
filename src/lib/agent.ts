@@ -12,7 +12,7 @@ import {
   type ActionInput,
   type ActionName,
 } from "./actions";
-import type { CaseRecord, Interaction, PlanStep } from "./types";
+import type { CaseGoal, CaseRecord, Interaction, PlanStep } from "./types";
 
 import { config, supportsEffort } from "./config";
 
@@ -37,6 +37,15 @@ export interface AgentTurnResult {
 
 /** Failed identity checks before the call is terminated as a fraud signal. */
 const MAX_FAILED_VERIFICATIONS = 3;
+
+/** The action that satisfies each case goal, so completion is detectable in code. */
+const GOAL_ACTION: Record<CaseGoal, ActionName> = {
+  change_payment_date: "change_payment_date",
+  refinance: "start_refinance_application",
+  collect_past_due: "take_payment",
+  hardship_plan: "enroll_hardship_plan",
+  payoff_quote: "issue_payoff_quote",
+};
 
 const tools: Anthropic.Tool[] = [
   {
@@ -229,7 +238,9 @@ If the customer cannot do the thing they called about, say so plainly and tell t
 
 Speak the way a good human agent does on the phone: short sentences, no lists, no headers, one question at a time. Numbers spoken naturally — "four hundred and twelve dollars", not "$412.00". This is read aloud by a text-to-speech engine, so never use markdown, asterisks, or bullet points.
 
-Before the conversation ends, call set_plan with where things stand and when to follow up. If the goal is settled either way, call close_case instead.`;
+Close the case the moment the goal is achieved — in the same turn as the action that achieved it, not when the customer says goodbye. You will not reliably know which turn is the last one. Never re-check eligibility for an action you already completed successfully.
+
+If the conversation is ending without the goal met, call set_plan with where things stand and when to follow up.`;
 }
 
 function planText(kase: CaseRecord): string {
@@ -499,8 +510,25 @@ async function runTool(
     case "check_eligibility":
       return validateAction(kase.customerId, toActionInput(input));
 
-    case "execute_action":
-      return executeAction(kase.customerId, kase.caseId, toActionInput(input));
+    case "execute_action": {
+      const action = toActionInput(input);
+      const result = await executeAction(kase.customerId, kase.caseId, action);
+
+      // The agent has no reliable signal that a voice turn is the last one, so
+      // "close the case before the conversation ends" never fires — the goal
+      // gets achieved and the case sits open forever, which kills the outcome
+      // signal the whole learning loop depends on. Instead the tool result
+      // says so at the moment the goal is met.
+      if (result.executed && GOAL_ACTION[kase.goal] === action.action) {
+        return {
+          ...result,
+          goalAchieved: true,
+          instruction:
+            "This completes the case goal. Call close_case with result=won in this same turn. Your reply must state the concrete result out loud — what changed and to what — before anything else; the customer cannot see this tool output and will not know it happened otherwise. Do not re-check eligibility for the action you just completed.",
+        };
+      }
+      return result;
+    }
 
     case "set_plan": {
       const steps = (input.steps as PlanStep[] | undefined) ?? [];
