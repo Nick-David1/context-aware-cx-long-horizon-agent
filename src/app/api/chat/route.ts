@@ -29,6 +29,7 @@ export async function POST(req: Request) {
     reply: result.reply,
     actions: result.actions,
     memoriesUsed: result.memoriesUsed,
+    endCall: result.endCall ?? null,
     // Which retrieval path actually ran, after any downgrades. Surfaced so the
     // dashboard shows the real pipeline rather than the configured intent.
     pipeline: {

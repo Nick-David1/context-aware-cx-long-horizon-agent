@@ -68,6 +68,12 @@ export interface CaseRecord {
   nextActionAt?: Date;
   nextActionReason?: string;
   attempts: number;
+  /**
+   * Consecutive failed identity checks on this case. A deterministic guardrail:
+   * past the threshold the agent terminates regardless of what the caller says,
+   * because a model-judgment guardrail can be talked around and this one can't.
+   */
+  failedVerifications?: number;
   outcome?: {
     result: "won" | "lost";
     reason: string;

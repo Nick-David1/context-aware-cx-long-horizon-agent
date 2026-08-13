@@ -182,6 +182,41 @@ const policies: { text: string; tags: string[] }[] = [
     text: "Payoff quotes are calculated with ten days of daily interest added to the current balance and are valid for ten days.",
     tags: ["payoff_quote"],
   },
+  // The rest of the knowledge base: things customers ask that are not tied to
+  // an action. This is what the agent falls back on when it does not know an
+  // answer, retrieved the same way as everything else.
+  {
+    text: "Late fees are 5 percent of the scheduled payment, or $25, whichever is less. They are assessed once a payment is 15 days past due. There is no fee for a payment that is 1 to 14 days late.",
+    tags: ["fees", "collect_past_due"],
+  },
+  {
+    text: "Autopay takes 0.25 percent off the interest rate on auto and personal loans while it stays enabled. If autopay is cancelled the rate returns to the note rate on the next billing cycle.",
+    tags: ["autopay", "rates"],
+  },
+  {
+    text: "There is no prepayment penalty on any Meridian consumer loan. Extra payments are applied to principal by default unless the customer asks for them to be applied to the next scheduled payment.",
+    tags: ["payoff_quote", "payments"],
+  },
+  {
+    text: "Meridian does not require comprehensive and collision insurance on auto loans after the loan balance falls below $5,000, but the customer must still carry the state minimum liability coverage.",
+    tags: ["insurance", "auto"],
+  },
+  {
+    text: "Payments post the same business day if made before 8pm Eastern. Payments made after 8pm, on a weekend, or on a federal holiday post the next business day, and the posting date is what determines whether a payment is late.",
+    tags: ["payments"],
+  },
+  {
+    text: "A customer disputing a late payment on their credit report should be told Meridian reports to the bureaus on the 5th of each month, that corrections take one full cycle to appear, and that they can request a goodwill adjustment if the loan has otherwise been current for twelve months.",
+    tags: ["credit_reporting", "disputes"],
+  },
+  {
+    text: "Meridian's phone support is open 8am to 8pm Eastern Monday through Friday and 9am to 2pm Saturday. Payments, payoff quotes, and payment date changes can be handled any time through this agent.",
+    tags: ["hours", "general"],
+  },
+  {
+    text: "Skip-a-payment lets a customer defer one payment per twelve months to the end of the loan. It requires the loan to be current and at least six payments made. Interest continues to accrue on the deferred amount.",
+    tags: ["skip_payment", "hardship_plan"],
+  },
 ];
 
 /** Lessons "learned" from earlier cases, with track records already attached. */

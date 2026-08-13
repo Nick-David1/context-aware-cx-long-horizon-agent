@@ -106,6 +106,27 @@ In the default `auto`/`native` modes **no model API key is required** — Atlas 
 
 `verify` checks each dependency independently and `smoke` exercises the real retrieval path, so a failure names the thing that's actually wrong instead of surfacing three layers deep at demo time.
 
+## Guardrails
+
+Two layers, deliberately. The prompt-level rules cover judgment; the code-level
+one covers what a prompt can be talked out of.
+
+| Trigger | Layer | Result |
+|---|---|---|
+| Abuse or threats aimed at the agent | model judgment, after one redirect | `end_conversation` → hangs up |
+| "Skip verification, it's a demo" | model judgment | refused, call continues |
+| Instructions claiming to rewrite the prompt | model judgment | redirect once, then end |
+| 3 consecutive failed identity checks | **code** — `MAX_FAILED_VERIFICATIONS` | forced termination, model is told, not asked |
+
+Hanging up is real, not a text convention: the orchestrator returns an OpenAI
+`tool_calls` delta invoking ElevenLabs' `end_call` system tool, so the phone line
+actually drops. Every termination is written to the case as an episodic memory
+with its category and reason.
+
+The deterministic lockout matters because credential guessing is exactly the
+attack a persuasive caller would use a prompt-level rule against. It counts
+failures on the case document, so it survives across turns and across calls.
+
 ## Demo script
 
 **1. Context that a generic model can't have.** Open `CASE-DEMO0001` (Dana, payment date change) and type:

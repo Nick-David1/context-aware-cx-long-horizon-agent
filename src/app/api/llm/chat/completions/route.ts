@@ -130,7 +130,35 @@ export async function POST(req: Request) {
             result.reply?.trim() ||
             "Sorry, could you say that again?";
           chunk({ content: reply }, null);
-          chunk({}, "stop");
+
+          if (result.endCall) {
+            // Hanging up is ElevenLabs' end_call system tool, invoked the same
+            // way any OpenAI tool call is: a tool_calls delta, then a
+            // finish_reason of "tool_calls". The closing line is spoken from
+            // the content chunk above, so `message` is left to the agent's text.
+            chunk(
+              {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: `call_${Date.now()}`,
+                    type: "function",
+                    function: {
+                      name: "end_call",
+                      arguments: JSON.stringify({ reason: result.endCall.reason }),
+                    },
+                  },
+                ],
+              },
+              null,
+            );
+            chunk({}, "tool_calls");
+            console.log(
+              `[llm] case=${caseId} END_CALL ${result.endCall.category}: ${result.endCall.reason}`,
+            );
+          } else {
+            chunk({}, "stop");
+          }
           console.log(`[llm] case=${caseId} replied ${reply.length} chars`);
         } catch (err) {
           clearInterval(heartbeat);

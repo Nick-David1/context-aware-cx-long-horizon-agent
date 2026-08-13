@@ -99,10 +99,14 @@ export default function Dashboard() {
         actions?: TurnAction[];
         memoriesUsed?: RecalledMemory[];
         pipeline?: Pipeline;
+        endCall?: { category: string; reason: string } | null;
         error?: string;
       };
       if (json.error) throw new Error(json.error);
       setTurns((t) => [...t, { role: "agent", text: json.reply ?? "" }]);
+      if (json.endCall) {
+        setError(`Call ended — ${json.endCall.category}: ${json.endCall.reason}`);
+      }
       setMemories(json.memoriesUsed ?? []);
       setActions(json.actions ?? []);
       setPipeline(json.pipeline ?? null);
