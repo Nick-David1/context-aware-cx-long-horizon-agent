@@ -163,18 +163,20 @@ async function searchSlice(
           model: config.rerankModel,
         },
       },
-      { $addFields: { rerankScore: { $meta: "score" } } },
-      { $addFields: { score: "$rerankScore" } },
+      // $rerank replaces $meta:"score", which is why the fusion score was
+      // materialized into a real field above — otherwise reranking destroys it
+      // and you lose the before/after that shows the reranker doing work.
+      { $addFields: { fusedScore: "$score", rerankScore: { $meta: "score" } } },
       { $limit: spec.limit },
     );
   }
 
   pipeline.push({ $project: { embedding: 0 } });
 
-  let docs: (Memory & { score: number; rerankScore?: number })[];
+  let docs: (Memory & { score: number; fusedScore?: number; rerankScore?: number })[];
   try {
     docs = await memories
-      .aggregate<Memory & { score: number; rerankScore?: number }>(pipeline)
+      .aggregate<Memory & { score: number; fusedScore?: number; rerankScore?: number }>(pipeline)
       .toArray();
   } catch (err) {
     // Downgrade once, permanently, and retry. The demo should not die over
@@ -203,7 +205,9 @@ async function searchSlice(
     memoryId: d.memoryId,
     kind: d.kind,
     text: d.text,
-    score: d.score,
+    // Keep the retrieval score as `score` even after reranking, so the UI can
+    // show both numbers side by side.
+    score: d.fusedScore ?? d.score,
     rerankScore: d.rerankScore,
     winRate: winRate(d),
   }));
