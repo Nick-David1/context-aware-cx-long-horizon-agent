@@ -22,7 +22,16 @@ Two things are missing from most LLM support agents:
 
 They're three separate vector searches rather than one top-k, because a chatty customer's notes will otherwise crowd out the policy that governs the action.
 
-Retrieval is two-stage. `$vectorSearch` over-fetches ~4× the quota per slice, then **`rerank-2.5`** — a cross-encoder — scores each candidate jointly against the query, and the quota is applied to *that* order. Vector search embeds query and document separately, which is what makes it fast over the whole collection and blunt at the top of the list; the cross-encoder reads the pair together and is the opposite. You can watch it work in the smoke test: for *"why did my payment get missed, money is tight"* the hardship-disclosure policy sits at vector rank #2 and the reranker promotes it to #1, above the generic hardship-plan description that scored higher on vocabulary overlap.
+Retrieval is **hybrid**, then reranked. Each slice runs two retrievers in parallel and fuses them with `$rankFusion` — Atlas's reciprocal-rank-fusion stage:
+
+| Retriever | Catches |
+|---|---|
+| `$vectorSearch` | paraphrase — "money is tight" → the hardship policy |
+| `$search` (Lucene BM25) | exact tokens embeddings blur — loan ids, "90 days", dollar figures |
+
+RRF merges the two rankings by *position*, so a BM25 score and a cosine score never have to be made commensurate. The effect is visible in the smoke test: *"how often can the payment date be changed, 90 days?"* returns the 90-day policy at rerank score **0.918**, more than double the next result.
+
+Then the fused candidates are reranked. `$rankFusion` over-fetches ~4× the quota per slice, and **`rerank-2.5`** — a cross-encoder — scores each candidate jointly against the query, and the quota is applied to *that* order. Vector search embeds query and document separately, which is what makes it fast over the whole collection and blunt at the top of the list; the cross-encoder reads the pair together and is the opposite. You can watch it work in the smoke test: for *"why did my payment get missed, money is tight"* the hardship-disclosure policy sits at vector rank #2 and the reranker promotes it to #1, above the generic hardship-plan description that scored higher on vocabulary overlap.
 
 **Both stages run inside MongoDB by default.** The vector index is declared `type: "autoEmbed"`, so Atlas generates embeddings from the `text` field on write *and* vectorizes the query string at read time — `$vectorSearch` receives `query`, not `queryVector`, and no vector ever crosses the wire. Reranking is the `$rerank` aggregation stage. MongoDB acquired Voyage AI in Feb 2025, so store, index, embed, and rerank are all one system.
 
@@ -30,10 +39,13 @@ Two escape hatches, because neither is universally available:
 
 | Env | Default | Fallback |
 |---|---|---|
+| `RETRIEVAL_MODE` | `hybrid` — `$rankFusion` over both retrievers | `vector` — `$vectorSearch` alone |
 | `EMBEDDING_MODE` | `auto` — Atlas embeds in-database, no key needed | `client` — we call the API and store vectors |
-| `RERANK_MODE` | `native` — `$rerank` stage, needs MongoDB 8.3 + Native Reranking enabled | `client` — we call the rerank API; `off` |
+| `RERANK_MODE` | `native` — `$rerank` stage | `client` — we call the rerank API; `off` |
 
-`native` downgrades to `client` automatically the first time a cluster rejects the stage, so an 8.1 cluster still works without config changes.
+Each downgrades automatically, once per process, the first time the cluster rejects its stage — so a cluster without `$rerank` or `$rankFusion` still works with no config change. The dashboard badges show which path actually ran, not the configured intent.
+
+`$rerank` additionally needs to be switched on per project: **Atlas → Project Settings → `$rerank`**. Without it the server returns a 403 naming the setting, and retrieval falls back to calling the rerank API directly.
 
 **A learning loop.** When a case closes:
 

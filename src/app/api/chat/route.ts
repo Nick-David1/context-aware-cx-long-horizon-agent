@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { runAgentTurn } from "@/lib/agent";
+import { rerankPath, retrievalPath } from "@/lib/memory";
+import { config } from "@/lib/config";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -27,5 +29,12 @@ export async function POST(req: Request) {
     reply: result.reply,
     actions: result.actions,
     memoriesUsed: result.memoriesUsed,
+    // Which retrieval path actually ran, after any downgrades. Surfaced so the
+    // dashboard shows the real pipeline rather than the configured intent.
+    pipeline: {
+      retrieval: retrievalPath(),
+      embedding: config.embeddingMode,
+      rerank: rerankPath(),
+    },
   });
 }

@@ -29,7 +29,8 @@ async function check(name: string, required: boolean, fn: () => Promise<string>)
 }
 
 console.log(
-  `\nmode: embedding=${config.embeddingMode}  rerank=${config.rerankMode}  model=${config.embedModel}`,
+  `\nmode: retrieval=${config.retrievalMode}  embedding=${config.embeddingMode}  ` +
+    `rerank=${config.rerankMode}  model=${config.embedModel}`,
 );
 
 await check("MongoDB Atlas — connection", true, async () => {
@@ -78,6 +79,25 @@ await check("MongoDB Atlas — vector index", true, async () => {
   const status = String(idx.status ?? "unknown");
   if (!idx.queryable) throw new Error(`status ${status} — still building, wait and re-run`);
   return `${config.vectorIndex} ${status}, ${mode}-mode`;
+});
+
+await check("MongoDB Atlas — text index", config.retrievalMode === "hybrid", async () => {
+  if (config.retrievalMode !== "hybrid") return "not used (RETRIEVAL_MODE=vector)";
+  const client = await new MongoClient(config.mongoUri, {
+    serverSelectionTimeoutMS: 8000,
+  }).connect();
+  const indexes = (await client
+    .db(config.dbName)
+    .collection("memories")
+    .listSearchIndexes()
+    .toArray()) as Record<string, unknown>[];
+  await client.close();
+
+  const idx = indexes.find((i) => i.name === config.textIndex);
+  if (!idx) throw new Error(`${config.textIndex} missing — run \`npm run db:indexes\``);
+  const status = String(idx.status ?? "unknown");
+  if (!idx.queryable) throw new Error(`status ${status} — still building, wait and re-run`);
+  return `${config.textIndex} ${status}, BM25 for $rankFusion`;
 });
 
 // Only required in client mode — in auto mode Atlas holds the model key.

@@ -15,10 +15,29 @@ const filterFields = [
   // separate policy from episodic from lesson, and superseded memories would
   // still be candidates.
   { type: "filter", path: "kind" },
-  { type: "filter", path: "customerId" },
+  // `scope`, not `customerId` — see the note on Memory.scope in types.ts.
+  { type: "filter", path: "scope" },
   { type: "filter", path: "tags" },
   { type: "filter", path: "active" },
 ];
+
+/**
+ * The lexical half of hybrid retrieval. `dynamic: false` so only the fields we
+ * name are indexed; token types on the filter fields so they can be used in
+ * compound filters rather than scored.
+ */
+const textDefinition = {
+  mappings: {
+    dynamic: false,
+    fields: {
+      [config.embedTextField]: { type: "string" },
+      kind: { type: "token" },
+      scope: { type: "token" },
+      tags: [{ type: "string" }, { type: "token" }],
+      active: { type: "boolean" },
+    },
+  },
+};
 
 /**
  * Auto mode: MongoDB generates the embeddings itself from the text field, using
@@ -53,6 +72,16 @@ const clientVectorDefinition = {
 
 const vectorDefinition =
   config.embeddingMode === "auto" ? autoVectorDefinition : clientVectorDefinition;
+
+/**
+ * An index built before `scope` existed would silently fail to scope-filter, so
+ * detect the drift and update in place rather than relying on someone
+ * remembering to drop and recreate.
+ */
+function hasScopeFilter(idx: Record<string, unknown> | undefined): boolean {
+  const def = idx?.latestDefinition as { fields?: { path?: string }[] } | undefined;
+  return Boolean(def?.fields?.some((f) => f.path === "scope"));
+}
 
 /** Auto and client indexes differ in *type*, which updateSearchIndex can't convert. */
 function modeOf(idx: Record<string, unknown> | undefined): "auto" | "client" | null {
@@ -94,6 +123,7 @@ async function main() {
     db.collection("cases").createIndex({ status: 1, nextActionAt: 1 }),
     db.collection("interactions").createIndex({ caseId: 1, startedAt: 1 }),
     db.collection("memories").createIndex({ memoryId: 1 }, { unique: true }),
+    db.collection("memories").createIndex({ scope: 1, kind: 1, active: 1 }),
     db.collection("outcomes").createIndex({ caseId: 1 }),
     // One live checkpoint per case — resume looks it up by this pair.
     db.collection("checkpoints").createIndex({ caseId: 1 }, { unique: true }),
@@ -137,8 +167,24 @@ async function main() {
     });
     console.log(`  recreated as ${label}`);
     console.log("  NOTE: re-run `npm run db:seed` — documents need re-writing for the new mode");
+  } else if (!hasScopeFilter(vectorIdx)) {
+    await memories.updateSearchIndex(config.vectorIndex, vectorDefinition);
+    console.log(`updated vector index ${config.vectorIndex} — added the 'scope' filter`);
   } else {
     console.log(`vector index ${config.vectorIndex} is current (${label})`);
+  }
+
+  const textIdx = existingSearch.find((i) => i.name === config.textIndex);
+  if (!textIdx) {
+    await memories.createSearchIndex({
+      name: config.textIndex,
+      type: "search",
+      definition: textDefinition,
+    });
+    console.log(`created search index ${config.textIndex} (BM25, for hybrid retrieval)`);
+  } else {
+    await memories.updateSearchIndex(config.textIndex, textDefinition);
+    console.log(`search index ${config.textIndex} updated`);
   }
 
   console.log("\nAtlas builds search indexes asynchronously — they usually go READY");

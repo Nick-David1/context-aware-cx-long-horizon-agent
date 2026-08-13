@@ -43,8 +43,9 @@ export interface RecalledMemory {
  */
 const OVERFETCH = 4;
 
-/** Set once if the cluster rejects $rerank, so we stop trying. */
+/** Set once if the cluster rejects a stage, so we stop trying. */
 let nativeRerankDowngraded = false;
+let hybridDowngraded = false;
 
 export function rerankPath(): "native" | "client" | "off" {
   if (config.rerankMode === "off") return "off";
@@ -52,10 +53,14 @@ export function rerankPath(): "native" | "client" | "off" {
   return "client";
 }
 
-function looksLikeMissingRerank(err: unknown): boolean {
+export function retrievalPath(): "hybrid" | "vector" {
+  return config.retrievalMode === "hybrid" && !hybridDowngraded ? "hybrid" : "vector";
+}
+
+function unsupportedStage(err: unknown, stage: string): boolean {
   const message = (err as Error)?.message?.toLowerCase() ?? "";
   return (
-    message.includes("rerank") ||
+    message.includes(stage) ||
     message.includes("unrecognized pipeline stage") ||
     message.includes("unknown stage")
   );
@@ -75,17 +80,24 @@ async function searchSlice(
 ): Promise<RecalledMemory[]> {
   const { memories } = await collections();
 
-  const filter: Record<string, unknown> = {
-    active: true,
-    kind: spec.kind,
-    customerId: spec.customerId,
-  };
-  if (tags.length > 0) filter.tags = { $in: tags };
-
+  const scope = spec.customerId ?? "global";
   const overfetch = spec.limit * OVERFETCH;
   const useNative = rerankPath() === "native";
+  const useHybrid = retrievalPath() === "hybrid";
 
-  const pipeline: Record<string, unknown>[] = [
+  // $vectorSearch takes an MQL-subset filter.
+  const vectorFilter: Record<string, unknown> = { active: true, kind: spec.kind, scope };
+  if (tags.length > 0) vectorFilter.tags = { $in: tags };
+
+  // $search takes Lucene compound clauses over token/boolean fields.
+  const searchFilters: Record<string, unknown>[] = [
+    { equals: { path: "active", value: true } },
+    { equals: { path: "kind", value: spec.kind } },
+    { equals: { path: "scope", value: scope } },
+  ];
+  if (tags.length > 0) searchFilters.push({ in: { path: "tags", value: tags } });
+
+  const vectorPipeline = [
     {
       $vectorSearch: {
         index: config.vectorIndex,
@@ -100,12 +112,46 @@ async function searchSlice(
         // recall degrades if the candidate pool is tight.
         numCandidates: Math.max(overfetch * 20, 200),
         limit: overfetch,
-        filter,
+        filter: vectorFilter,
       },
     },
-    // Materialize the score into a real field before $rerank replaces $meta.
-    { $addFields: { score: { $meta: "vectorSearchScore" } } },
   ];
+
+  // The lexical half. Embeddings blur exact tokens — loan ids, "90 days",
+  // dollar figures — and BM25 up-weights precisely those rare terms.
+  const textPipeline = [
+    {
+      $search: {
+        index: config.textIndex,
+        compound: {
+          filter: searchFilters,
+          must: [{ text: { query, path: config.embedTextField } }],
+        },
+      },
+    },
+    { $limit: overfetch },
+  ];
+
+  const head = useHybrid
+    ? [
+        {
+          // Reciprocal rank fusion over both retrievers, as one stage. Merges
+          // the two rankings by position rather than by raw score, so a BM25
+          // score and a cosine score never have to be made commensurate.
+          $rankFusion: {
+            input: { pipelines: { vector: vectorPipeline, text: textPipeline } },
+            combination: { weights: config.fusionWeights },
+          },
+        },
+        { $addFields: { score: { $meta: "score" } } },
+      ]
+    : [
+        ...vectorPipeline,
+        // Materialize the score before $rerank replaces $meta.
+        { $addFields: { score: { $meta: "vectorSearchScore" } } },
+      ];
+
+  const pipeline: Record<string, unknown>[] = [...head];
 
   if (useNative) {
     pipeline.push(
@@ -131,16 +177,26 @@ async function searchSlice(
       .aggregate<Memory & { score: number; rerankScore?: number }>(pipeline)
       .toArray();
   } catch (err) {
-    if (!useNative || !looksLikeMissingRerank(err)) throw err;
-    // Cluster is below 8.3, or Native Reranking is off for the project.
-    // Downgrade once, permanently, and retry — the demo should not die over
-    // which tier of reranking is available.
-    nativeRerankDowngraded = true;
-    console.warn(
-      "  ($rerank unavailable — needs MongoDB 8.3 + Native Reranking enabled in\n" +
-        "   Atlas Project Settings. Falling back to client-side reranking.)",
-    );
-    return searchSlice(query, queryVector, spec, tags);
+    // Downgrade once, permanently, and retry. The demo should not die over
+    // which tier of a stage the cluster happens to support.
+    if (useNative && unsupportedStage(err, "rerank")) {
+      nativeRerankDowngraded = true;
+      // Print the server's own message. "Unrecognized stage" means the cluster
+      // lacks the feature; anything else means our stage spec is wrong, and
+      // silently downgrading would hide a bug we could actually fix.
+      console.warn(
+        `  ($rerank rejected, falling back to client-side reranking)\n  reason: ${(err as Error).message}`,
+      );
+      return searchSlice(query, queryVector, spec, tags);
+    }
+    if (useHybrid && unsupportedStage(err, "rankfusion")) {
+      hybridDowngraded = true;
+      console.warn(
+        "  ($rankFusion unavailable — needs MongoDB 8.1+. Falling back to vector-only.)",
+      );
+      return searchSlice(query, queryVector, spec, tags);
+    }
+    throw err;
   }
 
   return docs.map((d) => ({
@@ -267,6 +323,7 @@ export async function remember(input: RememberInput): Promise<Memory> {
     memoryId: randomUUID(),
     kind: input.kind,
     customerId: input.customerId,
+    scope: input.customerId ?? "global",
     text: input.text,
     ...(embedding ? { embedding } : {}),
     tags: input.tags ?? [],

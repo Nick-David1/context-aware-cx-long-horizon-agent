@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { recall, rerankPath } from "../src/lib/memory";
+import { recall, rerankPath, retrievalPath } from "../src/lib/memory";
 import { config } from "../src/lib/config";
 
 /**
@@ -13,9 +13,14 @@ const queries = [
   { q: "I need to move my payment to the 15th", customerId: "CUST-1001" },
   { q: "why did my payment get missed, money is tight", customerId: "CUST-1002" },
   { q: "another bank offered me a better rate", customerId: "CUST-1003" },
+  // Exact-token query: "90 days" is the kind of literal that embeddings blur
+  // and BM25 nails. If hybrid is working, the 90-day policy should top this.
+  { q: "how often can the payment date be changed, 90 days?", customerId: "CUST-1001" },
 ];
 
-console.log(`\nembedding=${config.embeddingMode}  rerank=${rerankPath()}\n`);
+console.log(
+  `\nretrieval=${retrievalPath()}  embedding=${config.embeddingMode}  rerank=${rerankPath()}\n`,
+);
 
 for (const { q, customerId } of queries) {
   console.log(`── "${q}"  (${customerId})`);

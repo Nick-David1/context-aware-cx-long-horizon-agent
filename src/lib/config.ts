@@ -33,10 +33,24 @@ export type EmbeddingMode = "auto" | "client";
  */
 export type RerankMode = "native" | "client" | "off";
 
+/**
+ * Which retrievers feed the reranker.
+ *
+ *   hybrid — $rankFusion over $vectorSearch + Lucene BM25 $search, combined
+ *            with reciprocal rank fusion. Embeddings match paraphrase; BM25
+ *            matches the exact tokens embeddings blur — loan ids, "90 days",
+ *            dollar amounts. Requires MongoDB 8.1+.
+ *   vector — $vectorSearch alone.
+ *
+ * Downgrades to vector automatically if the cluster rejects $rankFusion.
+ */
+export type RetrievalMode = "hybrid" | "vector";
+
 export const config = {
   mongoUri: process.env.MONGODB_URI ?? "",
   dbName: process.env.MONGODB_DB ?? "cx_agent",
   vectorIndex: "memory_vector_index",
+  textIndex: "memory_text_index",
 
   embeddingMode: (process.env.EMBEDDING_MODE ?? "auto") as EmbeddingMode,
   /** The field autoEmbed indexes, and the field we embed in client mode. */
@@ -61,6 +75,14 @@ export const config = {
    * between them does not require rebuilding the index.
    */
   embedModel: process.env.VOYAGE_EMBED_MODEL ?? "voyage-4",
+
+  retrievalMode: (process.env.RETRIEVAL_MODE ?? "hybrid") as RetrievalMode,
+  /**
+   * Relative pull of each retriever in fusion. Vector-leaning: most queries here
+   * are conversational paraphrase, and BM25 is the specialist that rescues the
+   * exact-token cases rather than the primary signal.
+   */
+  fusionWeights: { vector: 0.6, text: 0.4 },
 
   rerankMode: (process.env.RERANK_MODE ?? "native") as RerankMode,
   rerankModel: process.env.RERANK_MODEL ?? "rerank-2.5",

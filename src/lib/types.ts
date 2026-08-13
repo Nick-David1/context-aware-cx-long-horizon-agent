@@ -105,8 +105,17 @@ export interface Memory {
   _id?: ObjectId;
   memoryId: string;
   kind: MemoryKind;
-  /** null scope = applies to every customer. */
+  /** null = applies to every customer. */
   customerId: string | null;
+  /**
+   * `customerId` collapsed to a non-null token: the customer id, or "global".
+   *
+   * Exists because the two indexes disagree about null. $vectorSearch takes an
+   * MQL filter where `customerId: null` matches fine; Lucene has no clean way
+   * to equal-match a null token, so BM25 filtering needs a real value. One
+   * derived field lets both indexes use the identical filter.
+   */
+  scope: string;
   text: string;
   /**
    * Only present in client embedding mode. In auto mode the document is written

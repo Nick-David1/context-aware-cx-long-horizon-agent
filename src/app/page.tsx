@@ -24,6 +24,12 @@ interface RecalledMemory {
   winRate?: number;
 }
 
+interface Pipeline {
+  retrieval: "hybrid" | "vector";
+  embedding: "auto" | "client";
+  rerank: "native" | "client" | "off";
+}
+
 interface TurnAction {
   tool: string;
   input: unknown;
@@ -49,6 +55,7 @@ export default function Dashboard() {
   const [busy, setBusy] = useState(false);
   const [memories, setMemories] = useState<RecalledMemory[]>([]);
   const [actions, setActions] = useState<TurnAction[]>([]);
+  const [pipeline, setPipeline] = useState<Pipeline | null>(null);
   const [error, setError] = useState<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
 
@@ -91,12 +98,14 @@ export default function Dashboard() {
         reply?: string;
         actions?: TurnAction[];
         memoriesUsed?: RecalledMemory[];
+        pipeline?: Pipeline;
         error?: string;
       };
       if (json.error) throw new Error(json.error);
       setTurns((t) => [...t, { role: "agent", text: json.reply ?? "" }]);
       setMemories(json.memoriesUsed ?? []);
       setActions(json.actions ?? []);
+      setPipeline(json.pipeline ?? null);
       void loadCases();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -273,9 +282,30 @@ export default function Dashboard() {
 
       {/* Context engine inspector */}
       <aside className="overflow-y-auto border-l" style={{ borderColor: "var(--border)" }}>
-        <div className="px-4 py-3 text-[10px] uppercase tracking-wide" style={{ color: "var(--muted)" }}>
-          Context retrieved this turn · vector → rerank
+        <div className="px-4 pt-3 text-[10px] uppercase tracking-wide" style={{ color: "var(--muted)" }}>
+          Context retrieved this turn
         </div>
+        {pipeline && (
+          <div className="flex flex-wrap gap-1 px-4 pb-3 pt-1.5">
+            {[
+              pipeline.retrieval === "hybrid" ? "$rankFusion" : "$vectorSearch",
+              pipeline.embedding === "auto" ? "autoEmbed" : "client embed",
+              pipeline.rerank === "native"
+                ? "$rerank"
+                : pipeline.rerank === "client"
+                  ? "rerank (api)"
+                  : "no rerank",
+            ].map((stage) => (
+              <span
+                key={stage}
+                className="rounded px-1.5 py-0.5 font-mono text-[10px]"
+                style={{ background: "var(--panel)", border: "1px solid var(--border)" }}
+              >
+                {stage}
+              </span>
+            ))}
+          </div>
+        )}
         {memories.length === 0 && (
           <p className="px-4 text-xs" style={{ color: "var(--muted)" }}>
             Vector search results appear here after each turn.
@@ -285,8 +315,15 @@ export default function Dashboard() {
           <div key={m.memoryId} className="border-b px-4 py-3" style={{ borderColor: "var(--border)" }}>
             <div className="mb-1 flex items-center gap-2 text-[10px] uppercase">
               <span style={{ color: KIND_COLOR[m.kind] }}>{m.kind}</span>
-              <span style={{ color: "var(--muted)" }} title="vector similarity">
-                vec {m.score.toFixed(3)}
+              <span
+                style={{ color: "var(--muted)" }}
+                title={
+                  pipeline?.retrieval === "hybrid"
+                    ? "reciprocal rank fusion score"
+                    : "vector similarity"
+                }
+              >
+                {pipeline?.retrieval === "hybrid" ? "rrf" : "vec"} {m.score.toFixed(3)}
               </span>
               {m.rerankScore !== undefined && (
                 <span style={{ color: "#c4b5fd" }} title="cross-encoder rerank score">
