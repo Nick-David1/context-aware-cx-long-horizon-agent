@@ -59,21 +59,6 @@ const tools: Anthropic.Tool[] = [
     },
   },
   {
-    name: "recall",
-    description:
-      "Search the context engine for policy, prior history with this customer, and lessons from past cases. Call this when the situation is unfamiliar, when the customer pushes back on something, or before choosing between two approaches. Returns memory ids you can cite.",
-    input_schema: {
-      type: "object",
-      properties: {
-        query: {
-          type: "string",
-          description: "What you need to know, phrased as a question or topic.",
-        },
-      },
-      required: ["query"],
-    },
-  },
-  {
     name: "verify_identity",
     description:
       "Verify the caller's identity with their date of birth and the last four of their SSN. Required before any change to the account. Do not attempt account changes before this succeeds.",
@@ -208,15 +193,16 @@ const tools: Anthropic.Tool[] = [
   },
 ];
 
-function systemPrompt(kase: CaseRecord, context: string, planText: string): string {
+/**
+ * The half of the prompt that never changes.
+ *
+ * Kept separate from the per-turn context so it can carry a cache breakpoint:
+ * tools and these instructions are byte-identical on every request, so after
+ * the first turn they are served from cache instead of re-processed. On a voice
+ * call that is time the customer would otherwise spend listening to silence.
+ */
+function staticInstructions(): string {
   return `You are a loan servicing agent for Meridian Lending. You work a case toward a goal over days or weeks, across many separate conversations — not one call at a time.
-
-Case ${kase.caseId}: goal is "${kase.goal}", currently ${kase.status}, attempt ${kase.attempts + 1}.
-
-${planText}
-
-# Context retrieved for this turn
-${context}
 
 # How to work
 Read the account before you speak to it. Check eligibility before you promise anything. Verify identity before you change anything.
@@ -240,7 +226,20 @@ Speak the way a good human agent does on the phone: short sentences, no lists, n
 
 Close the case the moment the goal is achieved — in the same turn as the action that achieved it, not when the customer says goodbye. You will not reliably know which turn is the last one. Never re-check eligibility for an action you already completed successfully.
 
-If the conversation is ending without the goal met, call set_plan with where things stand and when to follow up.`;
+If the conversation is ending without the goal met, call set_plan with where things stand and when to follow up.
+
+Everything you need about company policy, this customer's history, and lessons from past cases is supplied below under "Context for this turn". It is already retrieved for you — read it rather than asking for it.`;
+}
+
+/** The half that changes every turn, and therefore sits after the cache breakpoint. */
+function turnContext(kase: CaseRecord, context: string, plan: string): string {
+  return `# Case
+${kase.caseId}: goal is "${kase.goal}", currently ${kase.status}, attempt ${kase.attempts + 1}.
+
+${plan}
+
+# Context for this turn
+${context}`;
 }
 
 function planText(kase: CaseRecord): string {
@@ -260,13 +259,18 @@ export async function runAgentTurn(args: {
   channel: "voice" | "chat" | "sms";
   /** Prior turns in this same conversation. */
   history?: { role: "customer" | "agent"; text: string }[];
+  /** Called with each text delta as the model produces it. */
+  onText?: (delta: string) => void;
 }): Promise<AgentTurnResult> {
   const { cases, interactions } = await collections();
   const kase = await cases.findOne({ caseId: args.caseId });
   if (!kase) throw new Error(`Case ${args.caseId} not found`);
 
+  const tRecall = Date.now();
   const memoriesUsed = await recall({
-    query: `${kase.goal}: ${args.customerMessage}`,
+    // Search on what the customer actually said. Prefixing the case goal biases
+    // every query toward the goal and buries an off-goal question.
+    query: args.customerMessage,
     customerId: kase.customerId,
     tags: [kase.goal],
   });
@@ -299,6 +303,8 @@ export async function runAgentTurn(args: {
 
   const resumed = resumable ? candidate : null;
 
+  console.log(`[timing] recall ${Date.now() - tRecall}ms`);
+
   const messages: Anthropic.MessageParam[] = resumed
     ? (resumed.messages as Anthropic.MessageParam[])
     : [
@@ -311,7 +317,12 @@ export async function runAgentTurn(args: {
         { role: "user", content: args.customerMessage },
       ];
 
-  const system = systemPrompt(kase, renderContext(memoriesUsed), planText(kase));
+  // Static instructions + tools carry the cache breakpoint; the per-turn context
+  // follows it, so a changing context block never invalidates the cached prefix.
+  const system: Anthropic.TextBlockParam[] = [
+    { type: "text", text: staticInstructions(), cache_control: { type: "ephemeral" } },
+    { type: "text", text: turnContext(kase, renderContext(memoriesUsed), planText(kase)) },
+  ];
   const actionLog: AgentTurnResult["actions"] = resumed ? [...resumed.completedTools] : [];
   // Mutated by the tool handler when a guardrail fires.
   const guard: { endCall?: EndCall } = {};
@@ -325,7 +336,9 @@ export async function runAgentTurn(args: {
   // every tool result is both an audit record and a checkpoint boundary.
   let reply = "";
   for (let i = startStep; i < 8; i++) {
-    const response = await client.messages.create({
+    const tCall = Date.now();
+    let firstToken = 0;
+    const stream = client.messages.stream({
       model: MODEL,
       max_tokens: 8000,
       // Voice needs a fast turn; the deep planning happens in reflection instead.
@@ -335,6 +348,20 @@ export async function runAgentTurn(args: {
       tools,
       messages,
     });
+
+    // Forward text the moment it is generated. ElevenLabs starts speaking on the
+    // first token, so time-to-first-audio stops being the whole turn duration.
+    stream.on("text", (delta) => {
+      if (!firstToken) firstToken = Date.now();
+      args.onText?.(delta);
+    });
+
+    const response = await stream.finalMessage();
+
+    console.log(
+      `[timing] model call ${i} ${Date.now() - tCall}ms` +
+        `${firstToken ? ` (first token ${firstToken - tCall}ms)` : ""} stop=${response.stop_reason}`,
+    );
 
     const texts = response.content
       .filter((b): b is Anthropic.TextBlock => b.type === "text")
@@ -524,7 +551,7 @@ async function runTool(
           ...result,
           goalAchieved: true,
           instruction:
-            "This completes the case goal. Call close_case with result=won in this same turn. Your reply must state the concrete result out loud — what changed and to what — before anything else; the customer cannot see this tool output and will not know it happened otherwise. Do not re-check eligibility for the action you just completed.",
+            "This completes the case goal. Say the result out loud FIRST — what changed and to what — and put that sentence in the same message as your close_case call, before the tool call, not after it. The customer is on a phone and hears your text as you write it, so text that comes after a tool call is dead air they wait through. Then call close_case with result=won. Do not re-check eligibility for the action you just completed.",
         };
       }
       return result;

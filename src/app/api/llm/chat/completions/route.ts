@@ -22,6 +22,8 @@ interface ChatMessage {
 interface ChatRequest {
   messages: ChatMessage[];
   stream?: boolean;
+  /** OpenAI's opt-in for a trailing usage chunk. ElevenLabs sets it. */
+  stream_options?: { include_usage?: boolean };
   /** ElevenLabs passes extra body params through; caseId can arrive here. */
   caseId?: string;
 }
@@ -116,20 +118,30 @@ export async function POST(req: Request) {
         chunk({ role: "assistant", content: "" }, null);
         const heartbeat = setInterval(() => chunk({ content: "" }, null), 2000);
 
+        // Text is forwarded as the model generates it, so speech starts on the
+        // first token rather than after the whole tool loop finishes.
+        let streamed = 0;
+        const onText = (delta: string) => {
+          if (!streamed) clearInterval(heartbeat);
+          streamed += delta.length;
+          chunk({ content: delta }, null);
+        };
+
         try {
           const result = await runAgentTurn({
             caseId,
             customerMessage,
             channel: "voice",
             history,
+            onText,
           });
           clearInterval(heartbeat);
-          // Never emit an empty completion — a blank content chunk is itself
-          // enough for ElevenLabs to fail the whole conversation.
-          const reply =
-            result.reply?.trim() ||
-            "Sorry, could you say that again?";
-          chunk({ content: reply }, null);
+          // Only send the assembled reply if nothing streamed — otherwise this
+          // would say everything twice.
+          const reply = result.reply?.trim() ?? "";
+          if (!streamed) {
+            chunk({ content: reply || "Sorry, could you say that again?" }, null);
+          }
 
           if (result.endCall) {
             // Hanging up is ElevenLabs' end_call system tool, invoked the same
@@ -159,7 +171,9 @@ export async function POST(req: Request) {
           } else {
             chunk({}, "stop");
           }
-          console.log(`[llm] case=${caseId} replied ${reply.length} chars`);
+          console.log(
+            `[llm] case=${caseId} replied ${reply.length} chars (${streamed} streamed)`,
+          );
         } catch (err) {
           clearInterval(heartbeat);
           console.error("agent turn failed:", err);
@@ -174,6 +188,21 @@ export async function POST(req: Request) {
             null,
           );
           chunk({}, "stop");
+        }
+
+        // ElevenLabs sets stream_options.include_usage, and an OpenAI client
+        // that asks for the usage chunk can reject a stream that omits it.
+        if (body.stream_options?.include_usage) {
+          enqueue(
+            `data: ${JSON.stringify({
+              id,
+              object: "chat.completion.chunk",
+              created,
+              model: "cx-agent",
+              choices: [],
+              usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+            })}\n\n`,
+          );
         }
 
         enqueue("data: [DONE]\n\n");

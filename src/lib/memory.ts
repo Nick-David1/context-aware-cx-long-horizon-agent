@@ -249,10 +249,13 @@ export async function recall(opts: RecallOptions): Promise<RecalledMemory[]> {
     { kind: "lesson", customerId: null, limit: lessonLimit },
   ];
 
+  // Tags pre-filter only the lesson slice. Policy must stay searchable across
+  // the whole corpus: a customer on a payment-date case still asks about late
+  // fees, and filtering policy by the case goal makes that answer unreachable
+  // no matter how well the query matches it. Relevance is the reranker's job;
+  // the pre-filter's job is scope, and policy's scope is everything.
   const slices = await Promise.all(
-    specs.map((spec) =>
-      searchSlice(query, queryVector, spec, spec.kind === "episodic" ? [] : tags),
-    ),
+    specs.map((spec) => searchSlice(query, queryVector, spec, spec.kind === "lesson" ? tags : [])),
   );
 
   // Native reranking already trimmed each slice to its quota inside the
