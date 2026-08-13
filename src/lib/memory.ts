@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { collections, VECTOR_INDEX } from "./mongo";
-import { embedOne } from "./embeddings";
+import { embedOne, rerank } from "./embeddings";
 import type { Memory, MemoryKind } from "./types";
 
 /**
@@ -20,10 +20,20 @@ export interface RecalledMemory {
   memoryId: string;
   kind: MemoryKind;
   text: string;
+  /** Cosine similarity from $vectorSearch. */
   score: number;
-  /** Lesson win rate, when known. Drives re-ranking and is shown in the UI. */
+  /** Cross-encoder relevance from the reranker, when it ran. */
+  rerankScore?: number;
+  /** Lesson win rate, when known. Drives ordering and is shown in the UI. */
   winRate?: number;
 }
+
+/**
+ * How many candidates to pull per slice before reranking. The reranker is only
+ * as good as the shortlist it sees, and $vectorSearch is cheap — so fetch wide,
+ * then let the cross-encoder cut it down to the quota.
+ */
+const OVERFETCH = 4;
 
 interface SliceSpec {
   kind: MemoryKind;
@@ -99,23 +109,58 @@ export async function recall(opts: RecallOptions): Promise<RecalledMemory[]> {
 
   const queryVector = await embedOne(query, "query");
 
+  // Stage 1 — recall. Over-fetch each slice with $vectorSearch.
   const [policies, episodic, lessons] = await Promise.all([
-    searchSlice(queryVector, { kind: "policy", customerId: null, limit: policyLimit }, tags),
     searchSlice(
       queryVector,
-      { kind: "episodic", customerId, limit: episodicLimit },
+      { kind: "policy", customerId: null, limit: policyLimit * OVERFETCH },
+      tags,
+    ),
+    searchSlice(
+      queryVector,
+      { kind: "episodic", customerId, limit: episodicLimit * OVERFETCH },
       [],
     ),
-    searchSlice(queryVector, { kind: "lesson", customerId: null, limit: lessonLimit }, tags),
+    searchSlice(
+      queryVector,
+      { kind: "lesson", customerId: null, limit: lessonLimit * OVERFETCH },
+      tags,
+    ),
   ]);
 
-  // A lesson that has lost more than it won is actively misleading — drop it and
-  // let reflection replace it. Otherwise prefer proven lessons.
-  const rankedLessons = lessons
-    .filter((l) => l.winRate === undefined || l.winRate >= 0.4)
-    .sort((a, b) => (b.winRate ?? 0.5) - (a.winRate ?? 0.5));
+  // Stage 2 — precision. One rerank call over the whole shortlist, then apply
+  // per-slice quotas to the reranked order. Reranking across slices rather than
+  // within each one lets the cross-encoder compare a policy against a lesson,
+  // while the quotas still guarantee every slice is represented.
+  const candidates = [...policies, ...episodic, ...lessons];
+  const hits = await rerank(query, candidates.map((c) => c.text));
 
-  return [...policies, ...episodic, ...rankedLessons];
+  let ordered = candidates;
+  if (hits) {
+    for (const hit of hits) candidates[hit.index].rerankScore = hit.relevanceScore;
+    ordered = hits.map((h) => candidates[h.index]);
+  }
+
+  // Stage 3 — quotas and lesson credit. A lesson that has lost more than it won
+  // is actively misleading, so drop it and let reflection replace it.
+  const quota: Record<MemoryKind, number> = {
+    policy: policyLimit,
+    episodic: episodicLimit,
+    lesson: lessonLimit,
+  };
+  const taken: Record<MemoryKind, number> = { policy: 0, episodic: 0, lesson: 0 };
+
+  const selected: RecalledMemory[] = [];
+  for (const m of ordered) {
+    if (taken[m.kind] >= quota[m.kind]) continue;
+    if (m.kind === "lesson" && m.winRate !== undefined && m.winRate < 0.4) continue;
+    taken[m.kind] += 1;
+    selected.push(m);
+  }
+
+  // Group by kind for a stable, readable context block.
+  const order: MemoryKind[] = ["policy", "episodic", "lesson"];
+  return selected.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind));
 }
 
 /** Renders recalled memories into the block that goes into the model's system prompt. */

@@ -224,8 +224,8 @@ async function main() {
 
   console.log(
     usingRealEmbeddings()
-      ? "Embedding with Voyage AI."
-      : "VOYAGE_API_KEY unset — using the local fallback embedder (lower retrieval quality).",
+      ? "Embedding with voyage-4-large via the Atlas model API."
+      : "VOYAGE_API_KEY unset — using the local fallback embedder (lower retrieval quality, no reranking).",
   );
 
   await Promise.all([

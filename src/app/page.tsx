@@ -20,6 +20,7 @@ interface RecalledMemory {
   kind: "policy" | "episodic" | "lesson";
   text: string;
   score: number;
+  rerankScore?: number;
   winRate?: number;
 }
 
@@ -273,7 +274,7 @@ export default function Dashboard() {
       {/* Context engine inspector */}
       <aside className="overflow-y-auto border-l" style={{ borderColor: "var(--border)" }}>
         <div className="px-4 py-3 text-[10px] uppercase tracking-wide" style={{ color: "var(--muted)" }}>
-          Context retrieved this turn
+          Context retrieved this turn · vector → rerank
         </div>
         {memories.length === 0 && (
           <p className="px-4 text-xs" style={{ color: "var(--muted)" }}>
@@ -284,7 +285,14 @@ export default function Dashboard() {
           <div key={m.memoryId} className="border-b px-4 py-3" style={{ borderColor: "var(--border)" }}>
             <div className="mb-1 flex items-center gap-2 text-[10px] uppercase">
               <span style={{ color: KIND_COLOR[m.kind] }}>{m.kind}</span>
-              <span style={{ color: "var(--muted)" }}>{m.score.toFixed(3)}</span>
+              <span style={{ color: "var(--muted)" }} title="vector similarity">
+                vec {m.score.toFixed(3)}
+              </span>
+              {m.rerankScore !== undefined && (
+                <span style={{ color: "#c4b5fd" }} title="cross-encoder rerank score">
+                  rr {m.rerankScore.toFixed(3)}
+                </span>
+              )}
               {m.winRate !== undefined && (
                 <span style={{ color: m.winRate >= 0.6 ? "var(--accent)" : "#fca5a5" }}>
                   {(m.winRate * 100).toFixed(0)}% win

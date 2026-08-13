@@ -22,6 +22,8 @@ Two things are missing from most LLM support agents:
 
 They're three separate vector searches rather than one top-k, because a chatty customer's notes will otherwise crowd out the policy that governs the action.
 
+Retrieval is two-stage. `$vectorSearch` over-fetches ~4× the quota per slice, then **`rerank-2.5`** — a cross-encoder — scores each candidate jointly against the query and the quotas are applied to *that* order. Vector search embeds query and document separately, which is what makes it fast over millions of docs and blunt at the top of the list; the reranker is the opposite. Both models are Voyage AI accessed through an Atlas model API key, so the entire retrieval stack — store, index, embed, rerank — is one vendor.
+
 **A learning loop.** When a case closes:
 
 1. Every lesson that was in context gets its win/loss counters incremented — credit assignment.
@@ -45,8 +47,8 @@ The result compounds: the hundredth refinance case is worked better than the fir
                         │                      │
               ┌─────────▼────────┐   ┌─────────▼─────────┐
               │  Context engine  │   │  Servicing actions │
-              │  Atlas Vector    │   │  validate → execute│
-              │  Search          │   │  (rules in code)   │
+              │  $vectorSearch   │   │  validate → execute│
+              │  → rerank-2.5    │   │  (rules in code)   │
               └─────────┬────────┘   └─────────┬─────────┘
                         │                      │
                     ┌───▼──────────────────────▼───┐
@@ -75,7 +77,7 @@ Open http://localhost:3000.
 
 You need an **Atlas** cluster — M0 free tier is fine. Vector Search doesn't exist on a local `mongod`, so `npm run db:indexes` will fail against localhost.
 
-`VOYAGE_API_KEY` is optional: without it the app falls back to a local hashing embedder so everything still runs, but retrieval quality drops a lot. Set it before demoing.
+`VOYAGE_API_KEY` comes from the Atlas UI — **AI Model APIs → Create model API key**. It covers both `voyage-4-large` (embeddings) and `rerank-2.5` (reranking). It's optional: without it the app falls back to a local hashing embedder and skips reranking, so everything still runs but retrieval quality drops a lot. Set it before demoing.
 
 ## Demo script
 
@@ -113,7 +115,7 @@ Create the agent in the ElevenLabs dashboard first and put its id in `ELEVENLABS
 src/lib/
   types.ts        domain model
   mongo.ts        Atlas client + collection handles
-  embeddings.ts   Voyage AI, with a local fallback
+  embeddings.ts   voyage-4-large + rerank-2.5 via Atlas, with a local fallback
   memory.ts       the context engine: recall, remember, supersede, score
   actions.ts      servicing actions + the eligibility rules that gate them
   agent.ts        Claude tool loop + the reflection pass

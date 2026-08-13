@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
+    "verify": "tsx scripts/verify.ts",
     "db:indexes": "tsx scripts/create-indexes.ts",
     "db:seed": "tsx scripts/seed.ts",
     "agent:sync": "tsx scripts/sync-elevenlabs-agent.ts",
